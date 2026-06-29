@@ -1,0 +1,109 @@
+<!doctype html>
+<html>
+<head>
+  <script>
+    try {
+      window.localStorage.getItem('x')
+    } catch (e) {
+      const store = new Map()
+      const shim = {
+        getItem: (k) => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => { store.set(k, String(v)) },
+        removeItem: (k) => { store.delete(k) },
+        clear: () => { store.clear() },
+        key: (i) => Array.from(store.keys())[i] ?? null,
+        get length() { return store.size },
+      }
+      Object.defineProperty(window, 'localStorage', { value: shim, configurable: true })
+    }
+  </script>
+  <style>
+    html, body { margin: 0; padding: 0; height: auto; min-height: 0; }
+    #plugin-root { height: auto; }
+    body { display: block; }
+    body > #plugin-root > fig-footer {
+      background-color: var(--figma-color-bg);
+      box-shadow: inset 0 1px 0 0 var(--figma-color-border);
+      border-radius: 0 0 var(--radius-large) var(--radius-large);
+    }
+    dialog.fig-fill-picker-dialog {
+      width: 300px; max-width: 300px; min-width: 300px;
+      max-height: none; height: max-content;
+    }
+    .export-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: var(--spacer-1) var(--spacer-3);
+    }
+    .export-row fig-options { flex: 1; }
+  </style>
+</head>
+<body>
+  <div id="plugin-root">
+    <fig-content>
+      <fig-group name="导出 token">
+        <div class="export-row">
+          <fig-options id="export-format" options="JSON, CSS" value="JSON"></fig-options>
+          <fig-button id="action-export">导出</fig-button>
+        </div>
+      </fig-group>
+    </fig-content>
+    <fig-footer>
+      <fig-button id="action-extract" type="submit" disabled>提取并整理</fig-button>
+    </fig-footer>
+  </div>
+  <script>
+    let lastReportedHeight = 0, resizeRaf = 0
+    function measurePanelHeight() {
+      const root = document.getElementById('plugin-root')
+      if (!root) return 0
+      let h = Math.ceil(root.getBoundingClientRect().height)
+      const openDialog = document.querySelector('dialog.fig-fill-picker-dialog[open]')
+      if (openDialog) h = Math.max(h, Math.ceil(openDialog.getBoundingClientRect().bottom))
+      return h
+    }
+    function reportHeight() {
+      const h = measurePanelHeight()
+      if (h && h !== lastReportedHeight) {
+        lastReportedHeight = h
+        parent.postMessage({ pluginMessage: { type: 'resize', height: h } }, '*')
+      }
+    }
+    const pluginRoot = document.getElementById('plugin-root')
+    if (pluginRoot && typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => { if (resizeRaf) cancelAnimationFrame(resizeRaf); resizeRaf = requestAnimationFrame(reportHeight) }).observe(pluginRoot)
+    }
+    new MutationObserver(() => { if (resizeRaf) cancelAnimationFrame(resizeRaf); resizeRaf = requestAnimationFrame(reportHeight) }).observe(document.body, { childList: true, attributes: true, attributeFilter: ['open'], subtree: true })
+
+    document.getElementById('action-extract').addEventListener('click', () => {
+      parent.postMessage({ pluginMessage: { type: 'action', id: 'extract', params: {} } }, '*')
+    })
+    document.getElementById('action-export').addEventListener('click', () => {
+      const fmt = String(document.getElementById('export-format').value || 'JSON').toLowerCase()
+      parent.postMessage({ pluginMessage: { type: 'export', format: fmt === 'css' ? 'css' : 'json' } }, '*')
+    })
+    window.addEventListener('message', (event) => {
+      const msg = event.data && event.data.pluginMessage
+      if (!msg) return
+      if (msg.type === 'download') {
+        const ext = msg.format === 'css' ? 'css' : 'json'
+        const blob = new Blob([msg.content], { type: msg.format === 'css' ? 'text/css' : 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url; a.download = 'tokens.' + ext
+        document.body.appendChild(a); a.click(); document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+        return
+      }
+      if (msg.type === 'action-state' && msg.actions) {
+        const a = msg.actions['extract']
+        const button = document.getElementById('action-extract')
+        if (a && button) {
+          if (a.enabled === false) button.setAttribute('disabled', '')
+          else button.removeAttribute('disabled')
+          if (typeof a.label === 'string') button.textContent = a.label
+        }
+      }
+    })
+  </script>
+</body>
+</html>
