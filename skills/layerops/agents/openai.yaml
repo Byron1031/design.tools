@@ -1,0 +1,4 @@
+interface:
+  display_name: "LayerOps"
+  short_description: "Rename Figma layers into Android-friendly business semantics."
+  default_prompt: "Rename the selected Figma frame or page for an Android project using business-semantic layer names."
