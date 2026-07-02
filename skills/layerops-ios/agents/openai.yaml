@@ -1,0 +1,4 @@
+interface:
+  display_name: "LayerOps iOS"
+  short_description: "Rename Figma layers into Swift-friendly iOS UI semantics."
+  default_prompt: "Rename the selected Figma frame or page for an iOS project using Swift-friendly UI layer names."
