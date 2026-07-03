@@ -495,6 +495,18 @@ function validateDuplicates(groups: Record<TokenGroup, TokenCandidate[]>, audit:
   }
   return next
 }
+function sortCandidateGroups(groups: Record<TokenGroup, TokenCandidate[]>): Record<TokenGroup, TokenCandidate[]> {
+  const typography = groups.typography as TypographyCandidate[]
+  return {
+    colors: groups.colors,
+    typography: [...typography].sort((a, b) => {
+      if (b.fontSize !== a.fontSize) return b.fontSize - a.fontSize
+      if (b.fontWeight !== a.fontWeight) return b.fontWeight - a.fontWeight
+      return a.targetName.localeCompare(b.targetName)
+    }),
+    radius: groups.radius,
+  }
+}
 
 function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, TokenCandidate[]> {
   const frames = figma.currentPage.selection.filter((n): n is FrameNode => n.type === 'FRAME')
@@ -633,7 +645,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
     if ('children' in node) for (const child of node.children) collect(child)
   }
   for (const frame of frames) collect(frame)
-  return validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit)
+  return sortCandidateGroups(validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit))
 }
 
 async function buildProposal(): Promise<Proposal> {
@@ -663,6 +675,7 @@ function renameCandidate(group: TokenGroup, id: string, targetName: string): voi
     return { ...c, targetName: normalizeName(targetName), status: 'new', reason: undefined } as TokenCandidate
   })
   currentProposal.groups[group] = validateDuplicates({ ...currentProposal.groups, [group]: candidates }, currentAudit)[group]
+  currentProposal.groups = sortCandidateGroups(currentProposal.groups)
   currentProposal.summaries = summarizeProposal(currentProposal.groups)
 }
 function getOrCreateCollection(name: string): VariableCollection {

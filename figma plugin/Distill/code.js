@@ -384,6 +384,18 @@
     }
     return next;
   }
+  function sortCandidateGroups(groups) {
+    const typography = groups.typography;
+    return {
+      colors: groups.colors,
+      typography: [...typography].sort((a, b) => {
+        if (b.fontSize !== a.fontSize) return b.fontSize - a.fontSize;
+        if (b.fontWeight !== a.fontWeight) return b.fontWeight - a.fontWeight;
+        return a.targetName.localeCompare(b.targetName);
+      }),
+      radius: groups.radius
+    };
+  }
   function collectSelectionCandidates(audit) {
     const frames = figma.currentPage.selection.filter((n) => n.type === "FRAME");
     const colors = /* @__PURE__ */ new Map();
@@ -522,7 +534,7 @@
       if ("children" in node) for (const child of node.children) collect(child);
     }
     for (const frame of frames) collect(frame);
-    return validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit);
+    return sortCandidateGroups(validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit));
   }
   async function buildProposal() {
     const audit = currentAudit != null ? currentAudit : await auditLibraries();
@@ -548,6 +560,7 @@
       return __spreadProps(__spreadValues({}, c), { targetName: normalizeName(targetName), status: "new", reason: void 0 });
     });
     currentProposal.groups[group] = validateDuplicates(__spreadProps(__spreadValues({}, currentProposal.groups), { [group]: candidates }), currentAudit)[group];
+    currentProposal.groups = sortCandidateGroups(currentProposal.groups);
     currentProposal.summaries = summarizeProposal(currentProposal.groups);
   }
   function getOrCreateCollection(name) {
