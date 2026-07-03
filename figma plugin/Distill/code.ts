@@ -188,21 +188,32 @@ function colorValueToString(val: VariableValue, includeAlpha: boolean): string {
   return String(val)
 }
 function classifyStyle(fontSize: number, fontWeight: number): string {
-  if (fontSize >= 57) return 'display/lg'
-  if (fontSize >= 45) return 'display/md'
-  if (fontSize >= 36) return 'display/sm'
-  if (fontSize >= 32) return 'headline/lg'
-  if (fontSize >= 28) return 'headline/md'
-  if (fontSize >= 24) return 'headline/sm'
-  if (fontSize >= 22) return 'title/lg'
-  if (fontSize >= 18) return 'title/md'
-  if (fontSize >= 16) return fontWeight >= 600 ? 'title/sm' : 'body/lg'
-  if (fontSize >= 14) return fontWeight >= 600 ? 'label/lg' : 'body/md'
-  if (fontSize >= 12) return fontWeight >= 600 ? 'label/md' : 'body/sm'
-  if (fontSize >= 11) return 'label/sm'
-  return 'caption/xs'
+  if (fontSize >= 34) return 'largeTitle'
+  if (fontSize >= 28) return 'title1'
+  if (fontSize >= 22) return 'title2'
+  if (fontSize >= 20) return 'title3'
+  if (fontSize >= 17) return fontWeight >= 600 ? 'headline' : 'body'
+  if (fontSize >= 16) return 'callout'
+  if (fontSize >= 15) return 'subheadline'
+  if (fontSize >= 13) return 'footnote'
+  if (fontSize >= 12) return 'caption1'
+  return 'caption2'
 }
 function roleToStyleName(role: string): string {
+  const iosNames: Record<string, string> = {
+    largeTitle: 'LargeTitle',
+    title1: 'Title1',
+    title2: 'Title2',
+    title3: 'Title3',
+    headline: 'Headline',
+    body: 'Body',
+    callout: 'Callout',
+    subheadline: 'Subheadline',
+    footnote: 'Footnote',
+    caption1: 'Caption1',
+    caption2: 'Caption2',
+  }
+  if (iosNames[role]) return iosNames[role]
   const [cat, sz] = role.split('/')
   const C = cat.charAt(0).toUpperCase() + cat.slice(1)
   const S: Record<string, string> = { lg: 'Large', md: 'Medium', sm: 'Small', xl: 'XLarge', xs: 'XSmall' }
