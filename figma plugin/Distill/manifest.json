@@ -1,0 +1,14 @@
+{
+  "name": "Distill",
+  "id": "9c676d1a-bbdf-48b8-8f4d-682bee3d9ac7",
+  "api": "1.0.0",
+  "main": "code.js",
+  "editorType": ["figma"],
+  "relaunchButtons": [
+    {
+      "command": "9c676d1a-bbdf-48b8-8f4d-682bee3d9ac7",
+      "name": "Distill"
+    }
+  ],
+  "ui": "ui.html"
+}
