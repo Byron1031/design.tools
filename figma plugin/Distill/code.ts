@@ -14,6 +14,7 @@ type BaseCandidate = {
   status: TokenStatus
   suggestedName: string
   targetName: string
+  nameOverride?: string
   reason?: string
   selected?: boolean
   refs: BindingRef[]
@@ -664,7 +665,12 @@ function withTypographyDisambiguation(candidates: TypographyCandidate[], audit: 
     if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue
     const uniqueSignatures = new Set(group.map(candidate => candidate.valueKey))
     if (uniqueSignatures.size < 2) continue
-    for (const candidate of group) candidate.targetName = `${candidate.targetName}/${formatSizeName(candidate.fontSize)}`
+    for (const candidate of group) {
+      if (candidate.nameOverride) continue
+      const disambiguatedName = `${candidate.targetName}/${formatSizeName(candidate.fontSize)}`
+      candidate.suggestedName = disambiguatedName
+      candidate.targetName = disambiguatedName
+    }
   }
   const secondPass = new Map<string, TypographyCandidate[]>()
   for (const candidate of next) {
@@ -678,7 +684,12 @@ function withTypographyDisambiguation(candidates: TypographyCandidate[], audit: 
     if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue
     const uniqueSignatures = new Set(group.map(candidate => candidate.valueKey))
     if (uniqueSignatures.size < 2) continue
-    for (const candidate of group) candidate.targetName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`
+    for (const candidate of group) {
+      if (candidate.nameOverride) continue
+      const disambiguatedName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`
+      candidate.suggestedName = disambiguatedName
+      candidate.targetName = disambiguatedName
+    }
   }
   return next
 }
@@ -965,7 +976,14 @@ function renameCandidate(group: TokenGroup, id: string, targetName: string): voi
   if (!currentProposal || !currentAudit) return
   const candidates = currentProposal.groups[group].map(c => {
     if (c.id !== id || (c.status !== 'new' && c.status !== 'invalid')) return c
-    return { ...c, targetName: normalizeName(targetName), status: 'new', reason: undefined } as TokenCandidate
+    const nameOverride = targetName.trim() ? normalizeName(targetName) : ''
+    return {
+      ...c,
+      nameOverride,
+      targetName: nameOverride || c.suggestedName,
+      status: 'new',
+      reason: undefined,
+    } as TokenCandidate
   })
   currentProposal.groups[group] = validateDuplicates({ ...currentProposal.groups, [group]: candidates }, currentAudit)[group]
   currentProposal.groups = sortCandidateGroups(currentProposal.groups)

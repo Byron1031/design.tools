@@ -515,7 +515,12 @@
       if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue;
       const uniqueSignatures = new Set(group.map((candidate) => candidate.valueKey));
       if (uniqueSignatures.size < 2) continue;
-      for (const candidate of group) candidate.targetName = `${candidate.targetName}/${formatSizeName(candidate.fontSize)}`;
+      for (const candidate of group) {
+        if (candidate.nameOverride) continue;
+        const disambiguatedName = `${candidate.targetName}/${formatSizeName(candidate.fontSize)}`;
+        candidate.suggestedName = disambiguatedName;
+        candidate.targetName = disambiguatedName;
+      }
     }
     const secondPass = /* @__PURE__ */ new Map();
     for (const candidate of next) {
@@ -529,7 +534,12 @@
       if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue;
       const uniqueSignatures = new Set(group.map((candidate) => candidate.valueKey));
       if (uniqueSignatures.size < 2) continue;
-      for (const candidate of group) candidate.targetName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`;
+      for (const candidate of group) {
+        if (candidate.nameOverride) continue;
+        const disambiguatedName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`;
+        candidate.suggestedName = disambiguatedName;
+        candidate.targetName = disambiguatedName;
+      }
     }
     return next;
   }
@@ -808,7 +818,13 @@
     if (!currentProposal || !currentAudit) return;
     const candidates = currentProposal.groups[group].map((c) => {
       if (c.id !== id || c.status !== "new" && c.status !== "invalid") return c;
-      return __spreadProps(__spreadValues({}, c), { targetName: normalizeName(targetName), status: "new", reason: void 0 });
+      const nameOverride = targetName.trim() ? normalizeName(targetName) : "";
+      return __spreadProps(__spreadValues({}, c), {
+        nameOverride,
+        targetName: nameOverride || c.suggestedName,
+        status: "new",
+        reason: void 0
+      });
     });
     currentProposal.groups[group] = validateDuplicates(__spreadProps(__spreadValues({}, currentProposal.groups), { [group]: candidates }), currentAudit)[group];
     currentProposal.groups = sortCandidateGroups(currentProposal.groups);

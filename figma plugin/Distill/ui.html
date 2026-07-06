@@ -50,6 +50,12 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     select { min-width: 86px; padding: 0 8px; }
     input { width: 100%; padding: 0 8px; }
+    input.name-input.using-default {
+      background: var(--soft);
+    }
+    input.name-input::placeholder {
+      color: #9a9a9a;
+    }
     input.item-check {
       width: 16px;
       height: 16px;
@@ -227,6 +233,13 @@
     function send(message) {
       parent.postMessage({ pluginMessage: message }, '*')
     }
+    function escapeAttr(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+    }
     function sendWithLoading(message, action) {
       if (pendingStateTimer) clearTimeout(pendingStateTimer)
       loadingStartedAt = Date.now()
@@ -329,8 +342,11 @@
         const checkbox = selectable
           ? `<input class="item-check" type="checkbox" data-select-group="${group}" data-select-id="${item.id}" ${checked ? 'checked' : ''} ${item.status === 'invalid' || latestState.isExecuting ? 'disabled' : ''} aria-label="select token">`
           : ''
+        const hasNameOverride = Object.prototype.hasOwnProperty.call(item, 'nameOverride')
+        const inputValue = hasNameOverride ? item.nameOverride : item.targetName
+        const useDefaultPlaceholder = hasNameOverride && !item.nameOverride
         const input = editable
-          ? `<input data-name-group="${group}" data-id="${item.id}" value="${item.targetName.replace(/"/g, '&quot;')}" aria-label="token name">`
+          ? `<input class="name-input ${useDefaultPlaceholder ? 'using-default' : ''}" data-name-group="${group}" data-id="${item.id}" value="${escapeAttr(inputValue)}" placeholder="${escapeAttr(item.suggestedName)}" aria-label="token name">`
           : `<div class="item-meta">${item.targetName}</div>`
         return `<div class="item">
           <div class="item-side">${checkbox}<span class="badge ${item.status}">${statusLabels[item.status]}</span></div>
