@@ -1,0 +1,4 @@
+interface:
+  display_name: "North"
+  short_description: "First-principles adversarial review workflow"
+  default_prompt: "Use $north to review this code, requirement, or design with first-principles reasoning and adversarial scrutiny."
