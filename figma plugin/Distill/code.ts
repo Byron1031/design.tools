@@ -76,6 +76,7 @@ type LibraryAudit = {
   localTextStyles: TextStyle[]
   typographyStylesBySignature: Map<string, TypographyStyleRecord>
   typographyTemplates: TypographyNameTemplate[]
+  typographyTemplatesByFamilySize: Map<string, TypographyNameTemplate[]>
   typographyUsesMultiLayerNames: boolean
   remoteVariables: Array<{ name: string; resolvedType: VariableResolvedDataType; collectionName: string }>
   remoteStyleNames: string[]
@@ -303,6 +304,9 @@ function weightLabel(fontStyle: string, fontWeight: number): string {
 function typographySignature(fontFamily: string, fontSize: number, fontWeight: number): string {
   return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}`
 }
+function typographyFamilySizeKey(fontFamily: string, fontSize: number): string {
+  return `${cleanKey(fontFamily)}|${round2(fontSize)}`
+}
 function lineHeightToPx(lineHeight: LineHeight, fontSize: number): number | null {
   if (lineHeight.unit === 'PIXELS') return round2(lineHeight.value)
   if (lineHeight.unit === 'PERCENT') return round2(fontSize * lineHeight.value / 100)
@@ -526,6 +530,13 @@ async function auditLibraries(): Promise<LibraryAudit> {
   const typographyTemplates = typographyStyleRecords
     .map(typographyTemplateFromRecord)
     .filter((template): template is TypographyNameTemplate => Boolean(template))
+  const typographyTemplatesByFamilySize = new Map<string, TypographyNameTemplate[]>()
+  for (const template of typographyTemplates) {
+    const key = typographyFamilySizeKey(template.fontFamily, template.fontSize)
+    const templates = typographyTemplatesByFamilySize.get(key) ?? []
+    templates.push(template)
+    typographyTemplatesByFamilySize.set(key, templates)
+  }
   const typographyUsesMultiLayerNames = typographyTemplates.some(template => template.multiLayer)
   for (const v of localVariables) {
     const col = localCollections.find(c => c.id === v.variableCollectionId)
@@ -581,6 +592,7 @@ async function auditLibraries(): Promise<LibraryAudit> {
     localTextStyles,
     typographyStylesBySignature,
     typographyTemplates,
+    typographyTemplatesByFamilySize,
     typographyUsesMultiLayerNames,
     remoteVariables: uniqueRemoteVariables,
     remoteStyleNames,
@@ -630,6 +642,32 @@ function nearestTypographyTemplate(
   }
   return best
 }
+function nearestSameSizeTypographyTemplate(
+  audit: LibraryAudit,
+  fontFamily: string,
+  fontSize: number,
+  fontWeight: number
+): TypographyNameTemplate | null {
+  const candidates = audit.typographyTemplatesByFamilySize.get(typographyFamilySizeKey(fontFamily, fontSize)) ?? []
+  let best: TypographyNameTemplate | null = null
+  let bestScore = Number.POSITIVE_INFINITY
+  for (const template of candidates) {
+    const remotePenalty = template.remote ? 1000 : 0
+    const completenessPenalty = Math.max(0, 8 - template.segments.length) * 5
+    const weightPenalty = Math.abs(template.fontWeight - fontWeight) / 10
+    const score = remotePenalty + completenessPenalty + weightPenalty
+    if (score < bestScore) {
+      best = template
+      bestScore = score
+    }
+  }
+  return best
+}
+function typographyNameFromTemplate(template: TypographyNameTemplate, fontStyle: string, fontWeight: number): string {
+  const segments = [...template.prefixSegments, ...template.roleSegments]
+  if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight))
+  return segments.join('/')
+}
 function suggestTypographyName(
   audit: LibraryAudit,
   fontFamily: string,
@@ -639,14 +677,15 @@ function suggestTypographyName(
   families: Set<string>
 ): string {
   const fallback = defaultTypographyName(fontSize, fontWeight, fontStyle, families, fontFamily)
+  const sameSizeTemplate = nearestSameSizeTypographyTemplate(audit, fontFamily, fontSize, fontWeight)
+  if (sameSizeTemplate) return typographyNameFromTemplate(sameSizeTemplate, fontStyle, fontWeight)
   const template = nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight)
   if (!template) return fallback
   const desiredRole = roleToStyleName(classifyStyle(fontSize, fontWeight))
   const desiredRoleFamily = roleFamily(desiredRole)
   const roleSegments = template.roleFamily === desiredRoleFamily ? template.roleSegments : [desiredRole]
-  const segments = [...template.prefixSegments, ...roleSegments]
-  if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight))
-  return segments.join('/')
+  const adaptedTemplate: TypographyNameTemplate = { ...template, roleSegments }
+  return typographyNameFromTemplate(adaptedTemplate, fontStyle, fontWeight)
 }
 function formatSizeName(fontSize: number): string {
   return Number.isInteger(fontSize) ? String(fontSize) : String(round2(fontSize))

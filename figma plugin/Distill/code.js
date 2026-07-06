@@ -175,6 +175,9 @@
   function typographySignature(fontFamily, fontSize, fontWeight) {
     return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}`;
   }
+  function typographyFamilySizeKey(fontFamily, fontSize) {
+    return `${cleanKey(fontFamily)}|${round2(fontSize)}`;
+  }
   function lineHeightToPx(lineHeight, fontSize) {
     if (lineHeight.unit === "PIXELS") return round2(lineHeight.value);
     if (lineHeight.unit === "PERCENT") return round2(fontSize * lineHeight.value / 100);
@@ -269,7 +272,7 @@
     for (const item of Object.values(value)) collectVariableAliasIds(item, ids);
   }
   async function auditLibraries() {
-    var _a, _b, _c, _d, _e, _f;
+    var _a, _b, _c, _d, _e, _f, _g;
     const localCollections = await figma.variables.getLocalVariableCollectionsAsync();
     const localVariables = await figma.variables.getLocalVariablesAsync();
     const localTextStyles = await figma.getLocalTextStylesAsync();
@@ -389,6 +392,13 @@
       }
     }
     const typographyTemplates = typographyStyleRecords.map(typographyTemplateFromRecord).filter((template) => Boolean(template));
+    const typographyTemplatesByFamilySize = /* @__PURE__ */ new Map();
+    for (const template of typographyTemplates) {
+      const key = typographyFamilySizeKey(template.fontFamily, template.fontSize);
+      const templates = (_a = typographyTemplatesByFamilySize.get(key)) != null ? _a : [];
+      templates.push(template);
+      typographyTemplatesByFamilySize.set(key, templates);
+    }
     const typographyUsesMultiLayerNames = typographyTemplates.some((template) => template.multiLayer);
     for (const v of localVariables) {
       const col = localCollections.find((c) => c.id === v.variableCollectionId);
@@ -398,9 +408,9 @@
       if (v.resolvedType === "FLOAT" && v.name.toLowerCase().includes("radius") && typeof val === "number") valueNamesByGroup.radius.set(String(val), v.name);
     }
     for (const s of localTextStyles) valueNamesByGroup.typography.set(s.name, s.name);
-    const colorCollectionName = (_b = (_a = localCollections.find((c) => c.name.toLowerCase().includes("color"))) == null ? void 0 : _a.name) != null ? _b : COLOR_COLLECTION;
-    const typographyCollectionName = (_d = (_c = localCollections.find((c) => c.name.toLowerCase().includes("typography") || c.name.toLowerCase().includes("type"))) == null ? void 0 : _c.name) != null ? _d : TYPOGRAPHY_COLLECTION;
-    const radiusCollectionName = (_f = (_e = localCollections.find((c) => c.name.toLowerCase().includes("radius"))) == null ? void 0 : _e.name) != null ? _f : RADIUS_COLLECTION;
+    const colorCollectionName = (_c = (_b = localCollections.find((c) => c.name.toLowerCase().includes("color"))) == null ? void 0 : _b.name) != null ? _c : COLOR_COLLECTION;
+    const typographyCollectionName = (_e = (_d = localCollections.find((c) => c.name.toLowerCase().includes("typography") || c.name.toLowerCase().includes("type"))) == null ? void 0 : _d.name) != null ? _e : TYPOGRAPHY_COLLECTION;
+    const radiusCollectionName = (_g = (_f = localCollections.find((c) => c.name.toLowerCase().includes("radius"))) == null ? void 0 : _f.name) != null ? _g : RADIUS_COLLECTION;
     const localColorVariables = localVariables.filter((v) => v.resolvedType === "COLOR").length;
     const localTypographyVariables = localVariables.filter((v) => {
       const col = localCollections.find((c) => c.id === v.variableCollectionId);
@@ -443,6 +453,7 @@
       localTextStyles,
       typographyStylesBySignature,
       typographyTemplates,
+      typographyTemplatesByFamilySize,
       typographyUsesMultiLayerNames,
       remoteVariables: uniqueRemoteVariables,
       remoteStyleNames,
@@ -486,16 +497,39 @@
     }
     return best;
   }
+  function nearestSameSizeTypographyTemplate(audit, fontFamily, fontSize, fontWeight) {
+    var _a;
+    const candidates = (_a = audit.typographyTemplatesByFamilySize.get(typographyFamilySizeKey(fontFamily, fontSize))) != null ? _a : [];
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const template of candidates) {
+      const remotePenalty = template.remote ? 1e3 : 0;
+      const completenessPenalty = Math.max(0, 8 - template.segments.length) * 5;
+      const weightPenalty = Math.abs(template.fontWeight - fontWeight) / 10;
+      const score = remotePenalty + completenessPenalty + weightPenalty;
+      if (score < bestScore) {
+        best = template;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+  function typographyNameFromTemplate(template, fontStyle, fontWeight) {
+    const segments = [...template.prefixSegments, ...template.roleSegments];
+    if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight));
+    return segments.join("/");
+  }
   function suggestTypographyName(audit, fontFamily, fontSize, fontWeight, fontStyle, families) {
     const fallback = defaultTypographyName(fontSize, fontWeight, fontStyle, families, fontFamily);
+    const sameSizeTemplate = nearestSameSizeTypographyTemplate(audit, fontFamily, fontSize, fontWeight);
+    if (sameSizeTemplate) return typographyNameFromTemplate(sameSizeTemplate, fontStyle, fontWeight);
     const template = nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight);
     if (!template) return fallback;
     const desiredRole = roleToStyleName(classifyStyle(fontSize, fontWeight));
     const desiredRoleFamily = roleFamily(desiredRole);
     const roleSegments = template.roleFamily === desiredRoleFamily ? template.roleSegments : [desiredRole];
-    const segments = [...template.prefixSegments, ...roleSegments];
-    if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight));
-    return segments.join("/");
+    const adaptedTemplate = __spreadProps(__spreadValues({}, template), { roleSegments });
+    return typographyNameFromTemplate(adaptedTemplate, fontStyle, fontWeight);
   }
   function formatSizeName(fontSize) {
     return Number.isInteger(fontSize) ? String(fontSize) : String(round2(fontSize));
