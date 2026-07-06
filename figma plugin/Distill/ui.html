@@ -50,6 +50,14 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     select { min-width: 86px; padding: 0 8px; }
     input { width: 100%; padding: 0 8px; }
+    input.item-check {
+      width: 16px;
+      height: 16px;
+      padding: 0;
+      margin: 2px 0 0;
+      flex: 0 0 auto;
+      accent-color: var(--brand);
+    }
     .status {
       padding: 14px 12px;
       background: var(--soft);
@@ -143,12 +151,18 @@
     .empty { padding: 12px; color: var(--muted); }
     .item {
       display: grid;
-      grid-template-columns: 58px 1fr;
+      grid-template-columns: 76px 1fr;
       gap: 8px;
       padding: 10px 12px;
       border-top: 1px solid var(--border);
     }
     .item:first-child { border-top: 0; }
+    .item-side {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
+      min-width: 0;
+    }
     .badge {
       height: 20px;
       padding: 0 6px;
@@ -310,11 +324,16 @@
       const summary = proposal.summaries[group]
       const rows = items.length ? items.map(item => {
         const editable = item.status === 'new' || item.status === 'invalid'
+        const selectable = item.status === 'new' || item.status === 'invalid'
+        const checked = item.selected !== false
+        const checkbox = selectable
+          ? `<input class="item-check" type="checkbox" data-select-group="${group}" data-select-id="${item.id}" ${checked ? 'checked' : ''} ${item.status === 'invalid' || latestState.isExecuting ? 'disabled' : ''} aria-label="select token">`
+          : ''
         const input = editable
-          ? `<input data-group="${group}" data-id="${item.id}" value="${item.targetName.replace(/"/g, '&quot;')}" aria-label="token name">`
+          ? `<input data-name-group="${group}" data-id="${item.id}" value="${item.targetName.replace(/"/g, '&quot;')}" aria-label="token name">`
           : `<div class="item-meta">${item.targetName}</div>`
         return `<div class="item">
-          <div><span class="badge ${item.status}">${statusLabels[item.status]}</span></div>
+          <div class="item-side">${checkbox}<span class="badge ${item.status}">${statusLabels[item.status]}</span></div>
           <div class="item-body">
             ${input}
             <div class="item-meta">${colorSwatch(item)}${describeCandidate(item)}</div>
@@ -322,7 +341,7 @@
           </div>
         </div>`
       }).join('') : '<div class="empty">没有候选项</div>'
-      const canApply = items.some(item => item.status === 'new' || item.status === 'match')
+      const canApply = items.some(item => item.status === 'match' || (item.status === 'new' && item.selected !== false))
       const isApplying = latestState.activeAction === `apply-${group}`
       const tabs = groupOrder.map(tabGroup => {
         const active = tabGroup === group
@@ -345,9 +364,12 @@
           render()
         })
       })
-      host.querySelectorAll('input[data-group]').forEach(input => {
-        input.addEventListener('change', () => send({ type: 'rename-token', group: input.dataset.group, id: input.dataset.id, targetName: input.value }))
-        input.addEventListener('blur', () => send({ type: 'rename-token', group: input.dataset.group, id: input.dataset.id, targetName: input.value }))
+      host.querySelectorAll('input[data-name-group]').forEach(input => {
+        input.addEventListener('change', () => send({ type: 'rename-token', group: input.dataset.nameGroup, id: input.dataset.id, targetName: input.value }))
+        input.addEventListener('blur', () => send({ type: 'rename-token', group: input.dataset.nameGroup, id: input.dataset.id, targetName: input.value }))
+      })
+      host.querySelectorAll('input[data-select-group]').forEach(input => {
+        input.addEventListener('change', () => send({ type: 'toggle-token-selection', group: input.dataset.selectGroup, id: input.dataset.selectId, selected: input.checked }))
       })
       host.querySelectorAll('button[data-apply]').forEach(button => {
         button.addEventListener('click', () => {

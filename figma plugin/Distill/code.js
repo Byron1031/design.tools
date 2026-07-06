@@ -602,18 +602,56 @@
   }
   function sortCandidateGroups(groups) {
     const typography = groups.typography;
+    const radius = groups.radius;
+    const statusOrder = {
+      new: 0,
+      invalid: 1,
+      conflict: 2,
+      match: 3,
+      applied: 4,
+      skip: 5
+    };
+    const compareStatus = (a, b) => statusOrder[a.status] - statusOrder[b.status];
     return {
-      colors: groups.colors,
+      colors: [...groups.colors].sort((a, b) => compareStatus(a, b) || a.targetName.localeCompare(b.targetName)),
       typography: [...typography].sort((a, b) => {
+        const status = compareStatus(a, b);
+        if (status) return status;
         if (b.fontSize !== a.fontSize) return b.fontSize - a.fontSize;
         if (b.fontWeight !== a.fontWeight) return b.fontWeight - a.fontWeight;
         return a.targetName.localeCompare(b.targetName);
       }),
-      radius: groups.radius
+      radius: [...radius].sort((a, b) => compareStatus(a, b) || a.value - b.value || a.targetName.localeCompare(b.targetName))
     };
   }
+  function isSelectableNode(node) {
+    return "width" in node && "height" in node && node.width >= 32 && node.height >= 32;
+  }
+  function isIntegerRadius(value) {
+    return value >= 0 && value === Math.round(value);
+  }
+  function radiusPropertiesForNode(node) {
+    var _a;
+    if (!("cornerRadius" in node) || !isSelectableNode(node)) return [];
+    if (typeof node.cornerRadius === "number") {
+      return isIntegerRadius(node.cornerRadius) ? [{ value: node.cornerRadius, properties: ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"] }] : [];
+    }
+    const values = [];
+    const maybeCorner = node;
+    for (const property of ["topLeftRadius", "topRightRadius", "bottomLeftRadius", "bottomRightRadius"]) {
+      const value = maybeCorner[property];
+      if (typeof value === "number" && isIntegerRadius(value)) values.push({ property, value });
+    }
+    const byValue = /* @__PURE__ */ new Map();
+    for (const item of values) {
+      const properties = (_a = byValue.get(item.value)) != null ? _a : [];
+      properties.push(item.property);
+      byValue.set(item.value, properties);
+    }
+    return [...byValue.entries()].map(([value, properties]) => ({ value, properties }));
+  }
   function collectSelectionCandidates(audit) {
-    const frames = figma.currentPage.selection.filter((n) => n.type === "FRAME");
+    const selection = figma.currentPage.selection.filter((n) => "type" in n);
     const colors = /* @__PURE__ */ new Map();
     const typography = /* @__PURE__ */ new Map();
     const radius = /* @__PURE__ */ new Map();
@@ -628,7 +666,28 @@
       }
       if ("children" in node) for (const child of node.children) collectTextFamilyGroups(child);
     }
-    for (const frame of frames) collectTextFamilyGroups(frame);
+    for (const node of selection) collectTextFamilyGroups(node);
+    function addRadiusRef(value, node, properties) {
+      const key = String(value);
+      const existing = radius.get(key);
+      const ref = { group: "radius", nodeId: node.id, key, properties };
+      if (existing) existing.refs.push(ref);
+      else {
+        const suggestedName = suggestRadiusName(audit, value);
+        const candidate = {
+          id: `radius:${key}`,
+          group: "radius",
+          status: "new",
+          suggestedName,
+          targetName: suggestedName,
+          selected: true,
+          value,
+          valueKey: key,
+          refs: [ref]
+        };
+        radius.set(key, classifyCandidate(candidate, audit, value));
+      }
+    }
     function collect(node) {
       var _a;
       if ("fills" in node && Array.isArray(node.fills)) {
@@ -648,6 +707,7 @@
               status: "new",
               suggestedName,
               targetName: suggestedName,
+              selected: true,
               value,
               valueKey: key,
               hex: hexColor(value),
@@ -674,6 +734,7 @@
               status: "new",
               suggestedName,
               targetName: suggestedName,
+              selected: true,
               value,
               valueKey: key,
               hex: hexColor(value),
@@ -707,6 +768,7 @@
             status: "new",
             suggestedName,
             targetName: suggestedName,
+            selected: true,
             fontFamily: fontName.family,
             fontStyle: fontName.style,
             fontSize: node.fontSize,
@@ -719,34 +781,10 @@
           typography.set(key, classifyCandidate(candidate, audit, suggestedName));
         }
       }
-      if ("cornerRadius" in node && typeof node.cornerRadius === "number" && node.cornerRadius > 0 && node.cornerRadius === Math.round(node.cornerRadius)) {
-        const w = "width" in node ? node.width : 0;
-        const h = "height" in node ? node.height : 0;
-        const value = node.cornerRadius;
-        if (w >= 32 && h >= 32) {
-          const key = String(value);
-          const existing = radius.get(key);
-          const ref = { group: "radius", nodeId: node.id, key };
-          if (existing) existing.refs.push(ref);
-          else {
-            const suggestedName = suggestRadiusName(audit, value);
-            const candidate = {
-              id: `radius:${key}`,
-              group: "radius",
-              status: "new",
-              suggestedName,
-              targetName: suggestedName,
-              value,
-              valueKey: key,
-              refs: [ref]
-            };
-            radius.set(key, classifyCandidate(candidate, audit, value));
-          }
-        }
-      }
+      for (const item of radiusPropertiesForNode(node)) addRadiusRef(item.value, node, item.properties);
       if ("children" in node) for (const child of node.children) collect(child);
     }
-    for (const frame of frames) collect(frame);
+    for (const node of selection) collect(node);
     return sortCandidateGroups(validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit));
   }
   async function buildProposal() {
@@ -761,7 +799,7 @@
       type: "state",
       isExecuting,
       activeAction,
-      hasSelection: figma.currentPage.selection.some((n) => n.type === "FRAME"),
+      hasSelection: figma.currentPage.selection.length > 0,
       audit: (_a = currentAudit == null ? void 0 : currentAudit.summary) != null ? _a : null,
       proposal: currentProposal
     }, extra));
@@ -775,6 +813,13 @@
     currentProposal.groups[group] = validateDuplicates(__spreadProps(__spreadValues({}, currentProposal.groups), { [group]: candidates }), currentAudit)[group];
     currentProposal.groups = sortCandidateGroups(currentProposal.groups);
     currentProposal.summaries = summarizeProposal(currentProposal.groups);
+  }
+  function toggleCandidateSelection(group, id, selected) {
+    if (!currentProposal) return;
+    currentProposal.groups[group] = currentProposal.groups[group].map((c) => {
+      if (c.id !== id || c.status !== "new" && c.status !== "invalid") return c;
+      return __spreadProps(__spreadValues({}, c), { selected });
+    });
   }
   function getOrCreateCollection(name) {
     const existing = currentAudit == null ? void 0 : currentAudit.localCollections.find((c) => c.name === name);
@@ -896,19 +941,16 @@
       const v = c.status === "new" ? upsertVariable(c.targetName, c.value, "FLOAT", collection) : (_b = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "FLOAT")) != null ? _b : null;
       if (v) byKey.set(c.valueKey, v);
     }
-    for (const c of candidates) {
-      const v = byKey.get(c.valueKey);
-      if (!v) continue;
-      for (const ref of c.refs) {
-        if (ref.group !== "radius") continue;
-        const node = getNode(ref.nodeId);
-        if (!node || !("cornerRadius" in node)) continue;
-        try {
-          node.setBoundVariable("topLeftRadius", v);
-          node.setBoundVariable("topRightRadius", v);
-          node.setBoundVariable("bottomLeftRadius", v);
-          node.setBoundVariable("bottomRightRadius", v);
-        } catch (e) {
+    const selectedNodes = figma.currentPage.selection.filter((n) => "type" in n);
+    for (const node of selectedNodes) {
+      for (const item of radiusPropertiesForNode(node)) {
+        const v = byKey.get(String(item.value));
+        if (!v) continue;
+        for (const property of item.properties) {
+          try {
+            node.setBoundVariable(property, v);
+          } catch (e) {
+          }
         }
       }
     }
@@ -916,7 +958,10 @@
   }
   async function applyGroup(group) {
     if (!currentProposal) return;
-    const candidates = currentProposal.groups[group].filter((c) => c.status === "new" || c.status === "match");
+    const candidates = currentProposal.groups[group].filter((c) => {
+      if (c.status === "match") return true;
+      return c.status === "new" && c.selected !== false;
+    });
     if (candidates.length === 0) {
       figma.notify("\u6CA1\u6709\u53EF\u6DFB\u52A0\u6216\u7ED1\u5B9A\u7684 token");
       return;
@@ -1000,13 +1045,15 @@
           currentAudit = await auditLibraries();
           currentProposal = null;
         } else if (msg.type === "extract-preview") {
-          if (!figma.currentPage.selection.some((n) => n.type === "FRAME")) {
-            figma.notify("\u8BF7\u5148\u9009\u4E2D\u81F3\u5C11\u4E00\u4E2A Frame", { error: true });
+          if (figma.currentPage.selection.length === 0) {
+            figma.notify("\u8BF7\u5148\u9009\u4E2D\u81F3\u5C11\u4E00\u4E2A\u56FE\u5C42\u6216 Frame", { error: true });
           } else {
             currentProposal = await buildProposal();
           }
         } else if (msg.type === "rename-token") {
           renameCandidate(msg.group, msg.id, msg.targetName);
+        } else if (msg.type === "toggle-token-selection") {
+          toggleCandidateSelection(msg.group, msg.id, msg.selected);
         } else if (msg.type === "apply-group") {
           await applyGroup(msg.group);
         } else if (msg.type === "export") {

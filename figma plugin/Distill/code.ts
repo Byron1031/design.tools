@@ -2,10 +2,11 @@ type TokenGroup = 'colors' | 'typography' | 'radius'
 type TokenStatus = 'match' | 'new' | 'conflict' | 'invalid' | 'skip' | 'applied'
 type ExportFormat = 'json' | 'css'
 type TokenColor = { r: number; g: number; b: number; a: number }
+type RadiusBindableField = 'topLeftRadius' | 'topRightRadius' | 'bottomLeftRadius' | 'bottomRightRadius'
 type BindingRef =
   | { group: 'colors'; nodeId: string; property: 'fills' | 'strokes'; paintIndex: number; key: string }
   | { group: 'typography'; nodeId: string; key: string }
-  | { group: 'radius'; nodeId: string; key: string }
+  | { group: 'radius'; nodeId: string; key: string; properties: RadiusBindableField[] }
 
 type BaseCandidate = {
   id: string
@@ -14,6 +15,7 @@ type BaseCandidate = {
   suggestedName: string
   targetName: string
   reason?: string
+  selected?: boolean
   refs: BindingRef[]
 }
 type ColorCandidate = BaseCandidate & {
@@ -120,6 +122,7 @@ type UiMsg =
   | { type: 'audit' }
   | { type: 'extract-preview' }
   | { type: 'rename-token'; group: TokenGroup; id: string; targetName: string }
+  | { type: 'toggle-token-selection'; group: TokenGroup; id: string; selected: boolean }
   | { type: 'apply-group'; group: TokenGroup }
   | { type: 'export'; format: ExportFormat }
 
@@ -749,19 +752,59 @@ function validateDuplicates(groups: Record<TokenGroup, TokenCandidate[]>, audit:
 }
 function sortCandidateGroups(groups: Record<TokenGroup, TokenCandidate[]>): Record<TokenGroup, TokenCandidate[]> {
   const typography = groups.typography as TypographyCandidate[]
+  const radius = groups.radius as RadiusCandidate[]
+  const statusOrder: Record<TokenStatus, number> = {
+    new: 0,
+    invalid: 1,
+    conflict: 2,
+    match: 3,
+    applied: 4,
+    skip: 5,
+  }
+  const compareStatus = (a: TokenCandidate, b: TokenCandidate): number => statusOrder[a.status] - statusOrder[b.status]
   return {
-    colors: groups.colors,
+    colors: [...groups.colors].sort((a, b) => compareStatus(a, b) || a.targetName.localeCompare(b.targetName)),
     typography: [...typography].sort((a, b) => {
+      const status = compareStatus(a, b)
+      if (status) return status
       if (b.fontSize !== a.fontSize) return b.fontSize - a.fontSize
       if (b.fontWeight !== a.fontWeight) return b.fontWeight - a.fontWeight
       return a.targetName.localeCompare(b.targetName)
     }),
-    radius: groups.radius,
+    radius: [...radius].sort((a, b) => compareStatus(a, b) || a.value - b.value || a.targetName.localeCompare(b.targetName)),
   }
 }
 
+function isSelectableNode(node: SceneNode): boolean {
+  return 'width' in node && 'height' in node && node.width >= 32 && node.height >= 32
+}
+function isIntegerRadius(value: number): boolean {
+  return value >= 0 && value === Math.round(value)
+}
+function radiusPropertiesForNode(node: SceneNode): Array<{ value: number; properties: RadiusBindableField[] }> {
+  if (!('cornerRadius' in node) || !isSelectableNode(node)) return []
+  if (typeof node.cornerRadius === 'number') {
+    return isIntegerRadius(node.cornerRadius)
+      ? [{ value: node.cornerRadius, properties: ['topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius'] }]
+      : []
+  }
+  const values: Array<{ property: RadiusBindableField; value: number }> = []
+  const maybeCorner = node as SceneNode & Partial<Record<RadiusBindableField, number>>
+  for (const property of ['topLeftRadius', 'topRightRadius', 'bottomLeftRadius', 'bottomRightRadius'] as RadiusBindableField[]) {
+    const value = maybeCorner[property]
+    if (typeof value === 'number' && isIntegerRadius(value)) values.push({ property, value })
+  }
+  const byValue = new Map<number, RadiusBindableField[]>()
+  for (const item of values) {
+    const properties = byValue.get(item.value) ?? []
+    properties.push(item.property)
+    byValue.set(item.value, properties)
+  }
+  return [...byValue.entries()].map(([value, properties]) => ({ value, properties }))
+}
+
 function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, TokenCandidate[]> {
-  const frames = figma.currentPage.selection.filter((n): n is FrameNode => n.type === 'FRAME')
+  const selection = figma.currentPage.selection.filter((n): n is SceneNode => 'type' in n)
   const colors = new Map<string, ColorCandidate>()
   const typography = new Map<string, TypographyCandidate>()
   const radius = new Map<string, RadiusCandidate>()
@@ -777,7 +820,29 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
     }
     if ('children' in node) for (const child of node.children) collectTextFamilyGroups(child)
   }
-  for (const frame of frames) collectTextFamilyGroups(frame)
+  for (const node of selection) collectTextFamilyGroups(node)
+
+  function addRadiusRef(value: number, node: SceneNode, properties: RadiusBindableField[]): void {
+    const key = String(value)
+    const existing = radius.get(key)
+    const ref: BindingRef = { group: 'radius', nodeId: node.id, key, properties }
+    if (existing) existing.refs.push(ref)
+    else {
+      const suggestedName = suggestRadiusName(audit, value)
+      const candidate: RadiusCandidate = {
+        id: `radius:${key}`,
+        group: 'radius',
+        status: 'new',
+        suggestedName,
+        targetName: suggestedName,
+        selected: true,
+        value,
+        valueKey: key,
+        refs: [ref],
+      }
+      radius.set(key, classifyCandidate(candidate, audit, value))
+    }
+  }
 
   function collect(node: SceneNode): void {
     if ('fills' in node && Array.isArray(node.fills)) {
@@ -796,6 +861,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
             status: 'new',
             suggestedName,
             targetName: suggestedName,
+            selected: true,
             value,
             valueKey: key,
             hex: hexColor(value),
@@ -821,6 +887,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
             status: 'new',
             suggestedName,
             targetName: suggestedName,
+            selected: true,
             value,
             valueKey: key,
             hex: hexColor(value),
@@ -854,6 +921,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
           status: 'new',
           suggestedName,
           targetName: suggestedName,
+          selected: true,
           fontFamily: fontName.family,
           fontStyle: fontName.style,
           fontSize: node.fontSize,
@@ -866,34 +934,10 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
         typography.set(key, classifyCandidate(candidate, audit, suggestedName))
       }
     }
-    if ('cornerRadius' in node && typeof node.cornerRadius === 'number' && node.cornerRadius > 0 && node.cornerRadius === Math.round(node.cornerRadius)) {
-      const w = 'width' in node ? node.width : 0
-      const h = 'height' in node ? node.height : 0
-      const value = node.cornerRadius
-      if (w >= 32 && h >= 32) {
-        const key = String(value)
-        const existing = radius.get(key)
-        const ref: BindingRef = { group: 'radius', nodeId: node.id, key }
-        if (existing) existing.refs.push(ref)
-        else {
-          const suggestedName = suggestRadiusName(audit, value)
-          const candidate: RadiusCandidate = {
-            id: `radius:${key}`,
-            group: 'radius',
-            status: 'new',
-            suggestedName,
-            targetName: suggestedName,
-            value,
-            valueKey: key,
-            refs: [ref],
-          }
-          radius.set(key, classifyCandidate(candidate, audit, value))
-        }
-      }
-    }
+    for (const item of radiusPropertiesForNode(node)) addRadiusRef(item.value, node, item.properties)
     if ('children' in node) for (const child of node.children) collect(child)
   }
-  for (const frame of frames) collect(frame)
+  for (const node of selection) collect(node)
   return sortCandidateGroups(validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit))
 }
 
@@ -908,7 +952,7 @@ function postState(extra?: Record<string, unknown>): void {
     type: 'state',
     isExecuting,
     activeAction,
-    hasSelection: figma.currentPage.selection.some(n => n.type === 'FRAME'),
+    hasSelection: figma.currentPage.selection.length > 0,
     audit: currentAudit?.summary ?? null,
     proposal: currentProposal,
     ...extra,
@@ -926,6 +970,13 @@ function renameCandidate(group: TokenGroup, id: string, targetName: string): voi
   currentProposal.groups[group] = validateDuplicates({ ...currentProposal.groups, [group]: candidates }, currentAudit)[group]
   currentProposal.groups = sortCandidateGroups(currentProposal.groups)
   currentProposal.summaries = summarizeProposal(currentProposal.groups)
+}
+function toggleCandidateSelection(group: TokenGroup, id: string, selected: boolean): void {
+  if (!currentProposal) return
+  currentProposal.groups[group] = currentProposal.groups[group].map(c => {
+    if (c.id !== id || (c.status !== 'new' && c.status !== 'invalid')) return c
+    return { ...c, selected } as TokenCandidate
+  })
 }
 function getOrCreateCollection(name: string): VariableCollection {
   const existing = currentAudit?.localCollections.find(c => c.name === name)
@@ -1052,20 +1103,17 @@ async function applyRadius(candidates: RadiusCandidate[]): Promise<number> {
       : currentAudit?.localVariables.find(v => v.name === c.targetName && v.resolvedType === 'FLOAT') ?? null
     if (v) byKey.set(c.valueKey, v)
   }
-  for (const c of candidates) {
-    const v = byKey.get(c.valueKey)
-    if (!v) continue
-    for (const ref of c.refs) {
-      if (ref.group !== 'radius') continue
-      const node = getNode(ref.nodeId)
-      if (!node || !('cornerRadius' in node)) continue
-      try {
-        node.setBoundVariable('topLeftRadius', v)
-        node.setBoundVariable('topRightRadius', v)
-        node.setBoundVariable('bottomLeftRadius', v)
-        node.setBoundVariable('bottomRightRadius', v)
-      } catch {
-        // Best effort binding.
+  const selectedNodes = figma.currentPage.selection.filter((n): n is SceneNode => 'type' in n)
+  for (const node of selectedNodes) {
+    for (const item of radiusPropertiesForNode(node)) {
+      const v = byKey.get(String(item.value))
+      if (!v) continue
+      for (const property of item.properties) {
+        try {
+          node.setBoundVariable(property, v)
+        } catch {
+          // Best effort binding.
+        }
       }
     }
   }
@@ -1073,7 +1121,10 @@ async function applyRadius(candidates: RadiusCandidate[]): Promise<number> {
 }
 async function applyGroup(group: TokenGroup): Promise<void> {
   if (!currentProposal) return
-  const candidates = currentProposal.groups[group].filter((c): c is Extract<TokenCandidate, { group: typeof group }> => c.status === 'new' || c.status === 'match') as TokenCandidate[]
+  const candidates = currentProposal.groups[group].filter((c): c is Extract<TokenCandidate, { group: typeof group }> => {
+    if (c.status === 'match') return true
+    return c.status === 'new' && c.selected !== false
+  }) as TokenCandidate[]
   if (candidates.length === 0) {
     figma.notify('没有可添加或绑定的 token')
     return
@@ -1163,13 +1214,15 @@ figma.ui.onmessage = (msg: UiMsg) => {
         currentAudit = await auditLibraries()
         currentProposal = null
       } else if (msg.type === 'extract-preview') {
-        if (!figma.currentPage.selection.some(n => n.type === 'FRAME')) {
-          figma.notify('请先选中至少一个 Frame', { error: true })
+        if (figma.currentPage.selection.length === 0) {
+          figma.notify('请先选中至少一个图层或 Frame', { error: true })
         } else {
           currentProposal = await buildProposal()
         }
       } else if (msg.type === 'rename-token') {
         renameCandidate(msg.group, msg.id, msg.targetName)
+      } else if (msg.type === 'toggle-token-selection') {
+        toggleCandidateSelection(msg.group, msg.id, msg.selected)
       } else if (msg.type === 'apply-group') {
         await applyGroup(msg.group)
       } else if (msg.type === 'export') {
