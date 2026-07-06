@@ -48,6 +48,12 @@
   function normalizeName(name) {
     return name.trim().replace(/\s*\/\s*/g, "/").replace(/\s+/g, "-");
   }
+  function round2(value) {
+    return Math.round(value * 100) / 100;
+  }
+  function cleanKey(value) {
+    return value.trim().replace(/\s+/g, " ").toLowerCase();
+  }
   function isInvalidTokenName(name) {
     const n = name.trim();
     if (!n) return "\u540D\u79F0\u4E0D\u80FD\u4E3A\u7A7A";
@@ -124,6 +130,18 @@
     const S = { lg: "Large", md: "Medium", sm: "Small", xl: "XLarge", xs: "XSmall" };
     return `${C}/${(_a = S[sz]) != null ? _a : sz.toUpperCase()}`;
   }
+  function roleFamily(name) {
+    const n = cleanKey(name).replace(/[\s/_-]+/g, "");
+    if (n.includes("largetitle")) return "largetitle";
+    if (n.includes("subheadline")) return "subheadline";
+    if (n.includes("headline")) return "headline";
+    if (n.includes("title")) return "title";
+    if (n.includes("body")) return "body";
+    if (n.includes("callout")) return "callout";
+    if (n.includes("footnote")) return "footnote";
+    if (n.includes("caption")) return "caption";
+    return n;
+  }
   function styleToNumericWeight(style) {
     const all = style.replace(/[\s\-_]+/g, "").toLowerCase();
     if (/^\d+$/.test(all)) return parseInt(all);
@@ -138,6 +156,84 @@
     if (all.includes("black") || all.includes("heavy")) return 900;
     if (all.includes("bold")) return 700;
     return 400;
+  }
+  function numericToWeightName(n) {
+    var _a;
+    const m = { 100: "thin", 200: "extralight", 300: "light", 400: "regular", 500: "medium", 600: "semibold", 700: "bold", 800: "extrabold", 900: "black" };
+    return (_a = m[n]) != null ? _a : `w${n}`;
+  }
+  function normalizeWeightName(style) {
+    const num = style.replace(/[\s\-_]+/g, "").toLowerCase();
+    if (/^\d+$/.test(num)) return numericToWeightName(parseInt(num));
+    return num.replace(/italic$/, "").replace(/oblique$/, "") || "regular";
+  }
+  function weightLabel(fontStyle, fontWeight) {
+    const normalized = normalizeWeightName(fontStyle);
+    if (normalized.startsWith("w") && /^w\d+$/.test(normalized)) return normalized;
+    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  }
+  function typographySignature(fontFamily, fontSize, fontWeight) {
+    return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}`;
+  }
+  function lineHeightToPx(lineHeight, fontSize) {
+    if (lineHeight.unit === "PIXELS") return round2(lineHeight.value);
+    if (lineHeight.unit === "PERCENT") return round2(fontSize * lineHeight.value / 100);
+    return 0;
+  }
+  function letterSpacingToPx(letterSpacing, fontSize) {
+    if (letterSpacing.unit === "PIXELS") return round2(letterSpacing.value);
+    if (letterSpacing.unit === "PERCENT") return round2(fontSize * letterSpacing.value / 100);
+    return 0;
+  }
+  function typographyRecordFromStyle(style) {
+    const fontWeight = styleToNumericWeight(style.fontName.style);
+    return {
+      id: style.id,
+      name: style.name,
+      fontFamily: style.fontName.family,
+      fontStyle: style.fontName.style,
+      fontSize: round2(style.fontSize),
+      fontWeight,
+      lineHeightPx: lineHeightToPx(style.lineHeight, style.fontSize),
+      letterSpacingPx: letterSpacingToPx(style.letterSpacing, style.fontSize),
+      signature: typographySignature(style.fontName.family, style.fontSize, fontWeight),
+      remote: style.remote
+    };
+  }
+  function findRoleIndex(segments) {
+    return segments.findIndex((segment) => {
+      const family = roleFamily(segment);
+      return ["largetitle", "title", "headline", "subheadline", "body", "callout", "footnote", "caption"].includes(family);
+    });
+  }
+  function findWeightIndex(segments) {
+    const index = segments.findIndex((segment) => {
+      const normalized = normalizeWeightName(segment);
+      return ["thin", "extralight", "light", "regular", "medium", "semibold", "bold", "extrabold", "black"].includes(normalized) || /^w\d+$/.test(normalized);
+    });
+    return index >= 0 ? index : null;
+  }
+  function typographyTemplateFromRecord(record) {
+    const segments = record.name.split("/").map((segment) => segment.trim()).filter(Boolean);
+    if (segments.length === 0) return null;
+    const weightIndex = findWeightIndex(segments);
+    const roleIndex = findRoleIndex(segments);
+    if (roleIndex < 0) return null;
+    const roleEnd = weightIndex !== null && weightIndex > roleIndex ? weightIndex - 1 : segments.length - 1;
+    const roleSegments = segments.slice(roleIndex, roleEnd + 1);
+    return {
+      name: record.name,
+      segments,
+      prefixSegments: segments.slice(0, roleIndex),
+      roleSegments,
+      weightIndex,
+      fontFamily: record.fontFamily,
+      fontSize: record.fontSize,
+      fontWeight: record.fontWeight,
+      roleFamily: roleFamily(roleSegments.join(" ")),
+      remote: record.remote,
+      multiLayer: segments.length >= 3
+    };
   }
   function mostCommonPrefix(names, fallback) {
     var _a;
@@ -209,10 +305,12 @@
       if ("boundVariables" in node) collectVariableAliasIds(node.boundVariables, boundVariableIds);
     }
     const remoteStyleNames = [];
+    const remoteTextStyleRecords = [];
     for (const id of styleIds) {
       try {
         const style = await figma.getStyleByIdAsync(id);
         if (style == null ? void 0 : style.remote) remoteStyleNames.push(style.name);
+        if ((style == null ? void 0 : style.remote) && style.type === "TEXT") remoteTextStyleRecords.push(typographyRecordFromStyle(style));
         if (style && "boundVariables" in style) collectVariableAliasIds(style.boundVariables, boundVariableIds);
       } catch (e) {
       }
@@ -282,6 +380,16 @@
       ])
     };
     const valueNamesByGroup = { colors: /* @__PURE__ */ new Map(), typography: /* @__PURE__ */ new Map(), radius: /* @__PURE__ */ new Map() };
+    const localTextStyleRecords = localTextStyles.map(typographyRecordFromStyle);
+    const typographyStyleRecords = [...localTextStyleRecords, ...remoteTextStyleRecords];
+    const typographyStylesBySignature = /* @__PURE__ */ new Map();
+    for (const record of typographyStyleRecords) {
+      if (!typographyStylesBySignature.has(record.signature) || !record.remote) {
+        typographyStylesBySignature.set(record.signature, record);
+      }
+    }
+    const typographyTemplates = typographyStyleRecords.map(typographyTemplateFromRecord).filter((template) => Boolean(template));
+    const typographyUsesMultiLayerNames = typographyTemplates.some((template) => template.multiLayer);
     for (const v of localVariables) {
       const col = localCollections.find((c) => c.id === v.variableCollectionId);
       if (!col) continue;
@@ -333,6 +441,9 @@
       localCollections,
       localVariables,
       localTextStyles,
+      typographyStylesBySignature,
+      typographyTemplates,
+      typographyUsesMultiLayerNames,
       remoteVariables: uniqueRemoteVariables,
       remoteStyleNames,
       localComponentNames,
@@ -350,10 +461,77 @@
     if (c.a < 0.999) return `${audit.colorPrefix}/${hex}-alpha-${Math.round(c.a * 100)}`;
     return `${audit.colorPrefix}/${hex}`;
   }
-  function suggestTypographyName(fontSize, fontWeight, fontStyle, families, family) {
+  function defaultTypographyName(fontSize, fontWeight, fontStyle, families, family) {
     const role = roleToStyleName(classifyStyle(fontSize, fontWeight));
     const base = `${role}/${fontStyle}`;
     return families.size > 1 ? `${base} \xB7 ${family}` : base;
+  }
+  function nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight) {
+    if (!audit.typographyUsesMultiLayerNames) return null;
+    const desiredRoleFamily = roleFamily(roleToStyleName(classifyStyle(fontSize, fontWeight)));
+    let best = null;
+    let bestScore = Number.POSITIVE_INFINITY;
+    for (const template of audit.typographyTemplates) {
+      if (!template.multiLayer) continue;
+      const fontPenalty = cleanKey(template.fontFamily) === cleanKey(fontFamily) ? 0 : 500;
+      const rolePenalty = template.roleFamily === desiredRoleFamily ? 0 : 80;
+      const sizePenalty = Math.abs(template.fontSize - fontSize) * 10;
+      const weightPenalty = Math.abs(template.fontWeight - fontWeight) / 10;
+      const remotePenalty = template.remote ? 4 : 0;
+      const score = fontPenalty + rolePenalty + sizePenalty + weightPenalty + remotePenalty;
+      if (score < bestScore) {
+        best = template;
+        bestScore = score;
+      }
+    }
+    return best;
+  }
+  function suggestTypographyName(audit, fontFamily, fontSize, fontWeight, fontStyle, families) {
+    const fallback = defaultTypographyName(fontSize, fontWeight, fontStyle, families, fontFamily);
+    const template = nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight);
+    if (!template) return fallback;
+    const desiredRole = roleToStyleName(classifyStyle(fontSize, fontWeight));
+    const desiredRoleFamily = roleFamily(desiredRole);
+    const roleSegments = template.roleFamily === desiredRoleFamily ? template.roleSegments : [desiredRole];
+    const segments = [...template.prefixSegments, ...roleSegments];
+    if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight));
+    return segments.join("/");
+  }
+  function formatSizeName(fontSize) {
+    return Number.isInteger(fontSize) ? String(fontSize) : String(round2(fontSize));
+  }
+  function withTypographyDisambiguation(candidates, audit) {
+    var _a, _b;
+    const next = candidates.map((candidate) => __spreadValues({}, candidate));
+    const names = /* @__PURE__ */ new Map();
+    for (const candidate of next) {
+      if (candidate.status === "new" || candidate.status === "invalid") {
+        const group = (_a = names.get(candidate.targetName)) != null ? _a : [];
+        group.push(candidate);
+        names.set(candidate.targetName, group);
+      }
+    }
+    for (const [name, group] of names) {
+      if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue;
+      const uniqueSignatures = new Set(group.map((candidate) => candidate.valueKey));
+      if (uniqueSignatures.size < 2) continue;
+      for (const candidate of group) candidate.targetName = `${candidate.targetName}/${formatSizeName(candidate.fontSize)}`;
+    }
+    const secondPass = /* @__PURE__ */ new Map();
+    for (const candidate of next) {
+      if (candidate.status === "new" || candidate.status === "invalid") {
+        const group = (_b = secondPass.get(candidate.targetName)) != null ? _b : [];
+        group.push(candidate);
+        secondPass.set(candidate.targetName, group);
+      }
+    }
+    for (const [name, group] of secondPass) {
+      if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue;
+      const uniqueSignatures = new Set(group.map((candidate) => candidate.valueKey));
+      if (uniqueSignatures.size < 2) continue;
+      for (const candidate of group) candidate.targetName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`;
+    }
+    return next;
   }
   function suggestRadiusName(audit, value) {
     const existing = audit.valueNamesByGroup.radius.get(String(value));
@@ -364,6 +542,24 @@
     const invalid = isInvalidTokenName(candidate.targetName);
     if (invalid) return __spreadProps(__spreadValues({}, candidate), { status: "invalid", reason: invalid });
     const names = audit.namesByGroup[candidate.group];
+    if (candidate.group === "typography") {
+      const typographyCandidate = candidate;
+      const match = audit.typographyStylesBySignature.get(typographyCandidate.valueKey);
+      if (match) {
+        const secondaryDiffers = match.lineHeightPx !== typographyCandidate.lineHeightPx || match.letterSpacingPx !== typographyCandidate.letterSpacingPx;
+        return __spreadProps(__spreadValues({}, typographyCandidate), {
+          status: "match",
+          targetName: match.name,
+          matchedStyleId: match.id,
+          matchedStyleRemote: match.remote,
+          reason: secondaryDiffers ? "\u6838\u5FC3\u5C5E\u6027\u5339\u914D\uFF1B\u63D0\u4EA4\u540E\u5C06\u7ED1\u5B9A\u5230\u5DF2\u6709\u5E93\u6837\u5F0F" : "\u6838\u5FC3\u5C5E\u6027\u5339\u914D\u5DF2\u6709\u6587\u5B57\u6837\u5F0F"
+        });
+      }
+      if (names.has(typographyCandidate.targetName)) {
+        return __spreadProps(__spreadValues({}, typographyCandidate), { status: "conflict", reason: "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6587\u5B57\u5C5E\u6027\u4E0D\u540C" });
+      }
+      return __spreadProps(__spreadValues({}, typographyCandidate), { status: "new", reason: void 0 });
+    }
     if (!names.has(candidate.targetName)) return __spreadProps(__spreadValues({}, candidate), { status: "new", reason: void 0 });
     if (candidate.group === "colors") {
       const matchName = audit.valueNamesByGroup.colors.get(colorValueToString(value, true));
@@ -373,20 +569,29 @@
       const matchName = audit.valueNamesByGroup.radius.get(String(value));
       return __spreadProps(__spreadValues({}, candidate), { status: matchName === candidate.targetName ? "match" : "conflict", reason: matchName === candidate.targetName ? "\u5DF2\u5B58\u5728\u540C\u503C\u5706\u89D2" : "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6570\u503C\u4E0D\u540C" });
     }
-    return __spreadProps(__spreadValues({}, candidate), { status: names.has(candidate.targetName) ? "match" : "new", reason: names.has(candidate.targetName) ? "\u5DF2\u5B58\u5728\u540C\u540D\u6587\u5B57\u6837\u5F0F\u6216\u53D8\u91CF" : void 0 });
+    return candidate;
   }
   function validateDuplicates(groups, audit) {
     var _a;
     const next = { colors: [], typography: [], radius: [] };
     for (const group of Object.keys(groups)) {
+      const candidates = group === "typography" ? withTypographyDisambiguation(groups[group], audit) : groups[group];
       const counts = /* @__PURE__ */ new Map();
-      for (const c of groups[group]) {
+      for (const c of candidates) {
         if (c.status === "new" || c.status === "invalid") counts.set(c.targetName, ((_a = counts.get(c.targetName)) != null ? _a : 0) + 1);
       }
-      next[group] = groups[group].map((c) => {
+      next[group] = candidates.map((c) => {
         var _a2;
         const invalid = isInvalidTokenName(c.targetName);
         if (invalid) return __spreadProps(__spreadValues({}, c), { status: "invalid", reason: invalid });
+        if (group === "typography" && (c.status === "new" || c.status === "invalid")) {
+          const typographyCandidate = c;
+          const hasExistingName = audit.namesByGroup.typography.has(typographyCandidate.targetName);
+          const hasExistingSignature = audit.typographyStylesBySignature.has(typographyCandidate.valueKey);
+          if (hasExistingName && !hasExistingSignature) {
+            return __spreadProps(__spreadValues({}, typographyCandidate), { status: "conflict", reason: "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6587\u5B57\u5C5E\u6027\u4E0D\u540C" });
+          }
+        }
         if (((_a2 = counts.get(c.targetName)) != null ? _a2 : 0) > 1 && !audit.namesByGroup[group].has(c.targetName)) {
           return __spreadProps(__spreadValues({}, c), { status: "invalid", reason: "\u672C\u6B21\u65B0\u589E\u4E2D\u540D\u79F0\u91CD\u590D" });
         }
@@ -482,23 +687,20 @@
         const fontName = node.fontName;
         let lineHeightPx = null;
         if (node.lineHeight !== figma.mixed) {
-          if (node.lineHeight.unit === "PIXELS") lineHeightPx = Math.round(node.lineHeight.value * 100) / 100;
-          else if (node.lineHeight.unit === "PERCENT") lineHeightPx = Math.round(node.fontSize * node.lineHeight.value) / 100;
-          else lineHeightPx = 0;
+          lineHeightPx = lineHeightToPx(node.lineHeight, node.fontSize);
         }
         let letterSpacingPx = 0;
         if (node.letterSpacing !== figma.mixed) {
-          if (node.letterSpacing.unit === "PIXELS") letterSpacingPx = Math.round(node.letterSpacing.value * 100) / 100;
-          else if (node.letterSpacing.unit === "PERCENT") letterSpacingPx = Math.round(node.fontSize * node.letterSpacing.value) / 100;
+          letterSpacingPx = letterSpacingToPx(node.letterSpacing, node.fontSize);
         }
         const fontWeight = styleToNumericWeight(fontName.style);
         const roleWeight = `${roleToStyleName(classifyStyle(node.fontSize, fontWeight))}/${fontName.style}`;
-        const key = `${fontName.family}|${node.fontSize}|${fontName.style}|${lineHeightPx != null ? lineHeightPx : "auto"}|${letterSpacingPx}`;
+        const key = typographySignature(fontName.family, node.fontSize, fontWeight);
         const existing = typography.get(key);
         const ref = { group: "typography", nodeId: node.id, key };
         if (existing) existing.refs.push(ref);
         else {
-          const suggestedName = suggestTypographyName(node.fontSize, fontWeight, fontName.style, (_a = familiesByRoleWeight.get(roleWeight)) != null ? _a : /* @__PURE__ */ new Set([fontName.family]), fontName.family);
+          const suggestedName = suggestTypographyName(audit, fontName.family, node.fontSize, fontWeight, fontName.style, (_a = familiesByRoleWeight.get(roleWeight)) != null ? _a : /* @__PURE__ */ new Set([fontName.family]));
           const candidate = {
             id: `type:${key}`,
             group: "typography",
@@ -631,13 +833,22 @@
     return byKey.size;
   }
   async function applyTypography(candidates) {
-    var _a;
+    var _a, _b;
     const collection = getOrCreateCollection((_a = currentAudit == null ? void 0 : currentAudit.summary.typographyCollectionName) != null ? _a : TYPOGRAPHY_COLLECTION);
     const existingStyles = await figma.getLocalTextStylesAsync();
     const byKey = /* @__PURE__ */ new Map();
     for (const c of candidates) {
       if (c.status === "match") {
-        const matched = existingStyles.find((s) => s.name === c.targetName);
+        let matched = null;
+        if (c.matchedStyleId) {
+          try {
+            const style2 = await figma.getStyleByIdAsync(c.matchedStyleId);
+            if ((style2 == null ? void 0 : style2.type) === "TEXT") matched = style2;
+          } catch (e) {
+            matched = null;
+          }
+        }
+        if (!matched) matched = (_b = existingStyles.find((s) => s.name === c.targetName)) != null ? _b : null;
         if (matched) byKey.set(c.valueKey, matched);
         continue;
       }

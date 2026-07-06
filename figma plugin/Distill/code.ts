@@ -31,6 +31,8 @@ type TypographyCandidate = BaseCandidate & {
   lineHeightPx: number | null
   letterSpacingPx: number
   valueKey: string
+  matchedStyleId?: string
+  matchedStyleRemote?: boolean
 }
 type RadiusCandidate = BaseCandidate & {
   group: 'radius'
@@ -69,6 +71,9 @@ type LibraryAudit = {
   localCollections: VariableCollection[]
   localVariables: Variable[]
   localTextStyles: TextStyle[]
+  typographyStylesBySignature: Map<string, TypographyStyleRecord>
+  typographyTemplates: TypographyNameTemplate[]
+  typographyUsesMultiLayerNames: boolean
   remoteVariables: Array<{ name: string; resolvedType: VariableResolvedDataType; collectionName: string }>
   remoteStyleNames: string[]
   localComponentNames: string[]
@@ -77,6 +82,31 @@ type LibraryAudit = {
   valueNamesByGroup: Record<TokenGroup, Map<string, string>>
   colorPrefix: string
   radiusPrefix: string
+}
+type TypographyStyleRecord = {
+  id: string
+  name: string
+  fontFamily: string
+  fontStyle: string
+  fontSize: number
+  fontWeight: number
+  lineHeightPx: number | null
+  letterSpacingPx: number
+  signature: string
+  remote: boolean
+}
+type TypographyNameTemplate = {
+  name: string
+  segments: string[]
+  prefixSegments: string[]
+  roleSegments: string[]
+  weightIndex: number | null
+  fontFamily: string
+  fontSize: number
+  fontWeight: number
+  roleFamily: string
+  remote: boolean
+  multiLayer: boolean
 }
 type Proposal = {
   audit: AuditSummary
@@ -125,6 +155,12 @@ function summarizeProposal(groups: Record<TokenGroup, TokenCandidate[]>): Record
 }
 function normalizeName(name: string): string {
   return name.trim().replace(/\s*\/\s*/g, '/').replace(/\s+/g, '-')
+}
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+function cleanKey(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase()
 }
 function isInvalidTokenName(name: string): string | null {
   const n = name.trim()
@@ -219,6 +255,18 @@ function roleToStyleName(role: string): string {
   const S: Record<string, string> = { lg: 'Large', md: 'Medium', sm: 'Small', xl: 'XLarge', xs: 'XSmall' }
   return `${C}/${S[sz] ?? sz.toUpperCase()}`
 }
+function roleFamily(name: string): string {
+  const n = cleanKey(name).replace(/[\s/_-]+/g, '')
+  if (n.includes('largetitle')) return 'largetitle'
+  if (n.includes('subheadline')) return 'subheadline'
+  if (n.includes('headline')) return 'headline'
+  if (n.includes('title')) return 'title'
+  if (n.includes('body')) return 'body'
+  if (n.includes('callout')) return 'callout'
+  if (n.includes('footnote')) return 'footnote'
+  if (n.includes('caption')) return 'caption'
+  return n
+}
 function styleToNumericWeight(style: string): number {
   const all = style.replace(/[\s\-_]+/g, '').toLowerCase()
   if (/^\d+$/.test(all)) return parseInt(all)
@@ -242,6 +290,74 @@ function normalizeWeightName(style: string): string {
   const num = style.replace(/[\s\-_]+/g, '').toLowerCase()
   if (/^\d+$/.test(num)) return numericToWeightName(parseInt(num))
   return num.replace(/italic$/, '').replace(/oblique$/, '') || 'regular'
+}
+function weightLabel(fontStyle: string, fontWeight: number): string {
+  const normalized = normalizeWeightName(fontStyle)
+  if (normalized.startsWith('w') && /^w\d+$/.test(normalized)) return normalized
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+}
+function typographySignature(fontFamily: string, fontSize: number, fontWeight: number): string {
+  return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}`
+}
+function lineHeightToPx(lineHeight: LineHeight, fontSize: number): number | null {
+  if (lineHeight.unit === 'PIXELS') return round2(lineHeight.value)
+  if (lineHeight.unit === 'PERCENT') return round2(fontSize * lineHeight.value / 100)
+  return 0
+}
+function letterSpacingToPx(letterSpacing: LetterSpacing, fontSize: number): number {
+  if (letterSpacing.unit === 'PIXELS') return round2(letterSpacing.value)
+  if (letterSpacing.unit === 'PERCENT') return round2(fontSize * letterSpacing.value / 100)
+  return 0
+}
+function typographyRecordFromStyle(style: TextStyle): TypographyStyleRecord {
+  const fontWeight = styleToNumericWeight(style.fontName.style)
+  return {
+    id: style.id,
+    name: style.name,
+    fontFamily: style.fontName.family,
+    fontStyle: style.fontName.style,
+    fontSize: round2(style.fontSize),
+    fontWeight,
+    lineHeightPx: lineHeightToPx(style.lineHeight, style.fontSize),
+    letterSpacingPx: letterSpacingToPx(style.letterSpacing, style.fontSize),
+    signature: typographySignature(style.fontName.family, style.fontSize, fontWeight),
+    remote: style.remote,
+  }
+}
+function findRoleIndex(segments: string[]): number {
+  return segments.findIndex(segment => {
+    const family = roleFamily(segment)
+    return ['largetitle', 'title', 'headline', 'subheadline', 'body', 'callout', 'footnote', 'caption'].includes(family)
+  })
+}
+function findWeightIndex(segments: string[]): number | null {
+  const index = segments.findIndex(segment => {
+    const normalized = normalizeWeightName(segment)
+    return ['thin', 'extralight', 'light', 'regular', 'medium', 'semibold', 'bold', 'extrabold', 'black'].includes(normalized) || /^w\d+$/.test(normalized)
+  })
+  return index >= 0 ? index : null
+}
+function typographyTemplateFromRecord(record: TypographyStyleRecord): TypographyNameTemplate | null {
+  const segments = record.name.split('/').map(segment => segment.trim()).filter(Boolean)
+  if (segments.length === 0) return null
+  const weightIndex = findWeightIndex(segments)
+  const roleIndex = findRoleIndex(segments)
+  if (roleIndex < 0) return null
+  const roleEnd = weightIndex !== null && weightIndex > roleIndex ? weightIndex - 1 : segments.length - 1
+  const roleSegments = segments.slice(roleIndex, roleEnd + 1)
+  return {
+    name: record.name,
+    segments,
+    prefixSegments: segments.slice(0, roleIndex),
+    roleSegments,
+    weightIndex,
+    fontFamily: record.fontFamily,
+    fontSize: record.fontSize,
+    fontWeight: record.fontWeight,
+    roleFamily: roleFamily(roleSegments.join(' ')),
+    remote: record.remote,
+    multiLayer: segments.length >= 3,
+  }
 }
 function mostCommonPrefix(names: string[], fallback: string): string {
   const counts = new Map<string, number>()
@@ -313,10 +429,12 @@ async function auditLibraries(): Promise<LibraryAudit> {
     if ('boundVariables' in node) collectVariableAliasIds(node.boundVariables, boundVariableIds)
   }
   const remoteStyleNames: string[] = []
+  const remoteTextStyleRecords: TypographyStyleRecord[] = []
   for (const id of styleIds) {
     try {
       const style = await figma.getStyleByIdAsync(id)
       if (style?.remote) remoteStyleNames.push(style.name)
+      if (style?.remote && style.type === 'TEXT') remoteTextStyleRecords.push(typographyRecordFromStyle(style))
       if (style && 'boundVariables' in style) collectVariableAliasIds(style.boundVariables, boundVariableIds)
     } catch {
       // Style lookup can fail for deleted or unavailable remote styles.
@@ -393,6 +511,18 @@ async function auditLibraries(): Promise<LibraryAudit> {
     ]),
   }
   const valueNamesByGroup: Record<TokenGroup, Map<string, string>> = { colors: new Map(), typography: new Map(), radius: new Map() }
+  const localTextStyleRecords = localTextStyles.map(typographyRecordFromStyle)
+  const typographyStyleRecords = [...localTextStyleRecords, ...remoteTextStyleRecords]
+  const typographyStylesBySignature = new Map<string, TypographyStyleRecord>()
+  for (const record of typographyStyleRecords) {
+    if (!typographyStylesBySignature.has(record.signature) || !record.remote) {
+      typographyStylesBySignature.set(record.signature, record)
+    }
+  }
+  const typographyTemplates = typographyStyleRecords
+    .map(typographyTemplateFromRecord)
+    .filter((template): template is TypographyNameTemplate => Boolean(template))
+  const typographyUsesMultiLayerNames = typographyTemplates.some(template => template.multiLayer)
   for (const v of localVariables) {
     const col = localCollections.find(c => c.id === v.variableCollectionId)
     if (!col) continue
@@ -445,6 +575,9 @@ async function auditLibraries(): Promise<LibraryAudit> {
     localCollections,
     localVariables,
     localTextStyles,
+    typographyStylesBySignature,
+    typographyTemplates,
+    typographyUsesMultiLayerNames,
     remoteVariables: uniqueRemoteVariables,
     remoteStyleNames,
     localComponentNames,
@@ -463,10 +596,88 @@ function suggestColorName(audit: LibraryAudit, c: TokenColor): string {
   if (c.a < 0.999) return `${audit.colorPrefix}/${hex}-alpha-${Math.round(c.a * 100)}`
   return `${audit.colorPrefix}/${hex}`
 }
-function suggestTypographyName(fontSize: number, fontWeight: number, fontStyle: string, families: Set<string>, family: string): string {
+function defaultTypographyName(fontSize: number, fontWeight: number, fontStyle: string, families: Set<string>, family: string): string {
   const role = roleToStyleName(classifyStyle(fontSize, fontWeight))
   const base = `${role}/${fontStyle}`
   return families.size > 1 ? `${base} · ${family}` : base
+}
+function nearestTypographyTemplate(
+  audit: LibraryAudit,
+  fontFamily: string,
+  fontSize: number,
+  fontWeight: number
+): TypographyNameTemplate | null {
+  if (!audit.typographyUsesMultiLayerNames) return null
+  const desiredRoleFamily = roleFamily(roleToStyleName(classifyStyle(fontSize, fontWeight)))
+  let best: TypographyNameTemplate | null = null
+  let bestScore = Number.POSITIVE_INFINITY
+  for (const template of audit.typographyTemplates) {
+    if (!template.multiLayer) continue
+    const fontPenalty = cleanKey(template.fontFamily) === cleanKey(fontFamily) ? 0 : 500
+    const rolePenalty = template.roleFamily === desiredRoleFamily ? 0 : 80
+    const sizePenalty = Math.abs(template.fontSize - fontSize) * 10
+    const weightPenalty = Math.abs(template.fontWeight - fontWeight) / 10
+    const remotePenalty = template.remote ? 4 : 0
+    const score = fontPenalty + rolePenalty + sizePenalty + weightPenalty + remotePenalty
+    if (score < bestScore) {
+      best = template
+      bestScore = score
+    }
+  }
+  return best
+}
+function suggestTypographyName(
+  audit: LibraryAudit,
+  fontFamily: string,
+  fontSize: number,
+  fontWeight: number,
+  fontStyle: string,
+  families: Set<string>
+): string {
+  const fallback = defaultTypographyName(fontSize, fontWeight, fontStyle, families, fontFamily)
+  const template = nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight)
+  if (!template) return fallback
+  const desiredRole = roleToStyleName(classifyStyle(fontSize, fontWeight))
+  const desiredRoleFamily = roleFamily(desiredRole)
+  const roleSegments = template.roleFamily === desiredRoleFamily ? template.roleSegments : [desiredRole]
+  const segments = [...template.prefixSegments, ...roleSegments]
+  if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight))
+  return segments.join('/')
+}
+function formatSizeName(fontSize: number): string {
+  return Number.isInteger(fontSize) ? String(fontSize) : String(round2(fontSize))
+}
+function withTypographyDisambiguation(candidates: TypographyCandidate[], audit: LibraryAudit): TypographyCandidate[] {
+  const next = candidates.map(candidate => ({ ...candidate }))
+  const names = new Map<string, TypographyCandidate[]>()
+  for (const candidate of next) {
+    if (candidate.status === 'new' || candidate.status === 'invalid') {
+      const group = names.get(candidate.targetName) ?? []
+      group.push(candidate)
+      names.set(candidate.targetName, group)
+    }
+  }
+  for (const [name, group] of names) {
+    if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue
+    const uniqueSignatures = new Set(group.map(candidate => candidate.valueKey))
+    if (uniqueSignatures.size < 2) continue
+    for (const candidate of group) candidate.targetName = `${candidate.targetName}/${formatSizeName(candidate.fontSize)}`
+  }
+  const secondPass = new Map<string, TypographyCandidate[]>()
+  for (const candidate of next) {
+    if (candidate.status === 'new' || candidate.status === 'invalid') {
+      const group = secondPass.get(candidate.targetName) ?? []
+      group.push(candidate)
+      secondPass.set(candidate.targetName, group)
+    }
+  }
+  for (const [name, group] of secondPass) {
+    if (group.length < 2 || audit.namesByGroup.typography.has(name)) continue
+    const uniqueSignatures = new Set(group.map(candidate => candidate.valueKey))
+    if (uniqueSignatures.size < 2) continue
+    for (const candidate of group) candidate.targetName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`
+  }
+  return next
 }
 function suggestRadiusName(audit: LibraryAudit, value: number): string {
   const existing = audit.valueNamesByGroup.radius.get(String(value))
@@ -477,6 +688,25 @@ function classifyCandidate<T extends TokenCandidate>(candidate: T, audit: Librar
   const invalid = isInvalidTokenName(candidate.targetName)
   if (invalid) return { ...candidate, status: 'invalid', reason: invalid }
   const names = audit.namesByGroup[candidate.group]
+  if (candidate.group === 'typography') {
+    const typographyCandidate = candidate as TypographyCandidate
+    const match = audit.typographyStylesBySignature.get(typographyCandidate.valueKey)
+    if (match) {
+      const secondaryDiffers = match.lineHeightPx !== typographyCandidate.lineHeightPx || match.letterSpacingPx !== typographyCandidate.letterSpacingPx
+      return {
+        ...typographyCandidate,
+        status: 'match',
+        targetName: match.name,
+        matchedStyleId: match.id,
+        matchedStyleRemote: match.remote,
+        reason: secondaryDiffers ? '核心属性匹配；提交后将绑定到已有库样式' : '核心属性匹配已有文字样式',
+      } as T
+    }
+    if (names.has(typographyCandidate.targetName)) {
+      return { ...typographyCandidate, status: 'conflict', reason: '名称已存在但文字属性不同' } as T
+    }
+    return { ...typographyCandidate, status: 'new', reason: undefined } as T
+  }
   if (!names.has(candidate.targetName)) return { ...candidate, status: 'new', reason: undefined }
   if (candidate.group === 'colors') {
     const matchName = audit.valueNamesByGroup.colors.get(colorValueToString(value as VariableValue, true))
@@ -486,18 +716,29 @@ function classifyCandidate<T extends TokenCandidate>(candidate: T, audit: Librar
     const matchName = audit.valueNamesByGroup.radius.get(String(value))
     return { ...candidate, status: matchName === candidate.targetName ? 'match' : 'conflict', reason: matchName === candidate.targetName ? '已存在同值圆角' : '名称已存在但数值不同' }
   }
-  return { ...candidate, status: names.has(candidate.targetName) ? 'match' : 'new', reason: names.has(candidate.targetName) ? '已存在同名文字样式或变量' : undefined }
+  return candidate
 }
 function validateDuplicates(groups: Record<TokenGroup, TokenCandidate[]>, audit: LibraryAudit): Record<TokenGroup, TokenCandidate[]> {
   const next: Record<TokenGroup, TokenCandidate[]> = { colors: [], typography: [], radius: [] }
   for (const group of Object.keys(groups) as TokenGroup[]) {
+    const candidates = group === 'typography'
+      ? withTypographyDisambiguation(groups[group] as TypographyCandidate[], audit)
+      : groups[group]
     const counts = new Map<string, number>()
-    for (const c of groups[group]) {
+    for (const c of candidates) {
       if (c.status === 'new' || c.status === 'invalid') counts.set(c.targetName, (counts.get(c.targetName) ?? 0) + 1)
     }
-    next[group] = groups[group].map(c => {
+    next[group] = candidates.map(c => {
       const invalid = isInvalidTokenName(c.targetName)
       if (invalid) return { ...c, status: 'invalid', reason: invalid } as TokenCandidate
+      if (group === 'typography' && (c.status === 'new' || c.status === 'invalid')) {
+        const typographyCandidate = c as TypographyCandidate
+        const hasExistingName = audit.namesByGroup.typography.has(typographyCandidate.targetName)
+        const hasExistingSignature = audit.typographyStylesBySignature.has(typographyCandidate.valueKey)
+        if (hasExistingName && !hasExistingSignature) {
+          return { ...typographyCandidate, status: 'conflict', reason: '名称已存在但文字属性不同' } as TokenCandidate
+        }
+      }
       if ((counts.get(c.targetName) ?? 0) > 1 && !audit.namesByGroup[group].has(c.targetName)) {
         return { ...c, status: 'invalid', reason: '本次新增中名称重复' } as TokenCandidate
       }
@@ -593,23 +834,20 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
       const fontName = node.fontName as FontName
       let lineHeightPx: number | null = null
       if (node.lineHeight !== figma.mixed) {
-        if (node.lineHeight.unit === 'PIXELS') lineHeightPx = Math.round(node.lineHeight.value * 100) / 100
-        else if (node.lineHeight.unit === 'PERCENT') lineHeightPx = Math.round(node.fontSize * node.lineHeight.value) / 100
-        else lineHeightPx = 0
+        lineHeightPx = lineHeightToPx(node.lineHeight, node.fontSize)
       }
       let letterSpacingPx = 0
       if (node.letterSpacing !== figma.mixed) {
-        if (node.letterSpacing.unit === 'PIXELS') letterSpacingPx = Math.round(node.letterSpacing.value * 100) / 100
-        else if (node.letterSpacing.unit === 'PERCENT') letterSpacingPx = Math.round(node.fontSize * node.letterSpacing.value) / 100
+        letterSpacingPx = letterSpacingToPx(node.letterSpacing, node.fontSize)
       }
       const fontWeight = styleToNumericWeight(fontName.style)
       const roleWeight = `${roleToStyleName(classifyStyle(node.fontSize, fontWeight))}/${fontName.style}`
-      const key = `${fontName.family}|${node.fontSize}|${fontName.style}|${lineHeightPx ?? 'auto'}|${letterSpacingPx}`
+      const key = typographySignature(fontName.family, node.fontSize, fontWeight)
       const existing = typography.get(key)
       const ref: BindingRef = { group: 'typography', nodeId: node.id, key }
       if (existing) existing.refs.push(ref)
       else {
-        const suggestedName = suggestTypographyName(node.fontSize, fontWeight, fontName.style, familiesByRoleWeight.get(roleWeight) ?? new Set([fontName.family]), fontName.family)
+        const suggestedName = suggestTypographyName(audit, fontName.family, node.fontSize, fontWeight, fontName.style, familiesByRoleWeight.get(roleWeight) ?? new Set([fontName.family]))
         const candidate: TypographyCandidate = {
           id: `type:${key}`,
           group: 'typography',
@@ -753,7 +991,16 @@ async function applyTypography(candidates: TypographyCandidate[]): Promise<numbe
   const byKey = new Map<string, TextStyle>()
   for (const c of candidates) {
     if (c.status === 'match') {
-      const matched = existingStyles.find(s => s.name === c.targetName)
+      let matched: TextStyle | null = null
+      if (c.matchedStyleId) {
+        try {
+          const style = await figma.getStyleByIdAsync(c.matchedStyleId)
+          if (style?.type === 'TEXT') matched = style
+        } catch {
+          matched = null
+        }
+      }
+      if (!matched) matched = existingStyles.find(s => s.name === c.targetName) ?? null
       if (matched) byKey.set(c.valueKey, matched)
       continue
     }
