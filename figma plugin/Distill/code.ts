@@ -84,6 +84,7 @@ type LibraryAudit = {
   remoteComponentNames: string[]
   namesByGroup: Record<TokenGroup, Set<string>>
   valueNamesByGroup: Record<TokenGroup, Map<string, string>>
+  colorVariableIdsByValue: Map<string, string>
   colorPrefix: string
   radiusPrefix: string
 }
@@ -111,6 +112,10 @@ type TypographyNameTemplate = {
   roleFamily: string
   remote: boolean
   multiLayer: boolean
+}
+type BoundVariableRef = {
+  id: string
+  consumer: SceneNode
 }
 type Proposal = {
   audit: AuditSummary
@@ -402,6 +407,19 @@ function collectVariableAliasIds(value: unknown, ids: Set<string>): void {
   }
   for (const item of Object.values(value as Record<string, unknown>)) collectVariableAliasIds(item, ids)
 }
+function collectVariableAliasRefs(value: unknown, consumer: SceneNode, refs: BoundVariableRef[]): void {
+  if (!value || typeof value !== 'object') return
+  if ('type' in value && (value as { type?: unknown }).type === 'VARIABLE_ALIAS' && 'id' in value) {
+    const id = (value as { id?: unknown }).id
+    if (typeof id === 'string') refs.push({ id, consumer })
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectVariableAliasRefs(item, consumer, refs)
+    return
+  }
+  for (const item of Object.values(value as Record<string, unknown>)) collectVariableAliasRefs(item, consumer, refs)
+}
 
 async function auditLibraries(): Promise<LibraryAudit> {
   const localCollections = await figma.variables.getLocalVariableCollectionsAsync()
@@ -428,6 +446,7 @@ async function auditLibraries(): Promise<LibraryAudit> {
 
   const styleIds = new Set<string>()
   const boundVariableIds = new Set<string>()
+  const boundVariableRefs: BoundVariableRef[] = []
   const styleNodes = figma.currentPage.findAll()
   function addStyleId(value: unknown): void {
     if (typeof value === 'string' && value) styleIds.add(value)
@@ -437,7 +456,10 @@ async function auditLibraries(): Promise<LibraryAudit> {
     if ('strokeStyleId' in node) addStyleId(node.strokeStyleId)
     if ('textStyleId' in node) addStyleId(node.textStyleId)
     if ('effectStyleId' in node) addStyleId(node.effectStyleId)
-    if ('boundVariables' in node) collectVariableAliasIds(node.boundVariables, boundVariableIds)
+    if ('boundVariables' in node) {
+      collectVariableAliasIds(node.boundVariables, boundVariableIds)
+      collectVariableAliasRefs(node.boundVariables, node, boundVariableRefs)
+    }
   }
   const remoteStyleNames: string[] = []
   const remoteTextStyleRecords: TypographyStyleRecord[] = []
@@ -455,6 +477,8 @@ async function auditLibraries(): Promise<LibraryAudit> {
   const remoteVariables: Array<{ name: string; resolvedType: VariableResolvedDataType; collectionName: string }> = []
   const remoteAvailableVariables: Array<{ name: string; resolvedType: VariableResolvedDataType; collectionName: string }> = []
   const remoteBoundVariables: Array<{ name: string; resolvedType: VariableResolvedDataType; collectionName: string }> = []
+  const remoteColorValueNames = new Map<string, string>()
+  const colorVariableIdsByValue = new Map<string, string>()
   const remoteLibraryNames = new Set<string>()
   let remoteCollections = 0
   try {
@@ -483,6 +507,20 @@ async function auditLibraries(): Promise<LibraryAudit> {
       const remoteVar = { name: variable.name, resolvedType: variable.resolvedType, collectionName: variable.variableCollectionId }
       remoteVariables.push(remoteVar)
       remoteBoundVariables.push(remoteVar)
+      if (variable.resolvedType === 'COLOR') {
+        for (const ref of boundVariableRefs.filter(ref => ref.id === id)) {
+          try {
+            const resolved = variable.resolveForConsumer(ref.consumer)
+            if (resolved.resolvedType === 'COLOR') {
+              const valueKey = colorValueToString(resolved.value, true)
+              remoteColorValueNames.set(valueKey, variable.name)
+              if (!colorVariableIdsByValue.has(valueKey)) colorVariableIdsByValue.set(valueKey, variable.id)
+            }
+          } catch {
+            // Some remote color variables cannot resolve for every consumer; keep the audit partial.
+          }
+        }
+      }
       try {
         const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
         if (collection?.remote) remoteLibraryNames.add(collection.name)
@@ -545,8 +583,15 @@ async function auditLibraries(): Promise<LibraryAudit> {
     const col = localCollections.find(c => c.id === v.variableCollectionId)
     if (!col) continue
     const val = resolveVariableValue(v.valuesByMode[col.defaultModeId], localVariables, localCollections)
-    if (v.resolvedType === 'COLOR') valueNamesByGroup.colors.set(colorValueToString(val, true), v.name)
+    if (v.resolvedType === 'COLOR') {
+      const valueKey = colorValueToString(val, true)
+      valueNamesByGroup.colors.set(valueKey, v.name)
+      colorVariableIdsByValue.set(valueKey, v.id)
+    }
     if (v.resolvedType === 'FLOAT' && v.name.toLowerCase().includes('radius') && typeof val === 'number') valueNamesByGroup.radius.set(String(val), v.name)
+  }
+  for (const [value, name] of remoteColorValueNames) {
+    if (!valueNamesByGroup.colors.has(value)) valueNamesByGroup.colors.set(value, name)
   }
   for (const s of localTextStyles) valueNamesByGroup.typography.set(s.name, s.name)
 
@@ -603,6 +648,7 @@ async function auditLibraries(): Promise<LibraryAudit> {
     remoteComponentNames: [...remoteComponentNames],
     namesByGroup,
     valueNamesByGroup,
+    colorVariableIdsByValue,
     colorPrefix: mostCommonPrefix(colorNames, 'color'),
     radiusPrefix: mostCommonPrefix(radiusNames, 'radius'),
   }
@@ -1074,9 +1120,16 @@ async function applyColors(candidates: ColorCandidate[]): Promise<number> {
   const collection = getOrCreateCollection(currentAudit?.summary.colorCollectionName ?? COLOR_COLLECTION)
   const byKey = new Map<string, Variable>()
   for (const c of candidates) {
-    const v = c.status === 'new'
-      ? upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, 'COLOR', collection)
-      : currentAudit?.localVariables.find(v => v.name === c.targetName && v.resolvedType === 'COLOR') ?? null
+    let v: Variable | null = null
+    if (c.status === 'new') {
+      v = upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, 'COLOR', collection)
+    } else {
+      v = currentAudit?.localVariables.find(v => v.name === c.targetName && v.resolvedType === 'COLOR') ?? null
+      if (!v) {
+        const id = currentAudit?.colorVariableIdsByValue.get(hexColor(c.value))
+        if (id) v = await figma.variables.getVariableByIdAsync(id)
+      }
+    }
     if (v) byKey.set(c.valueKey, v)
   }
   for (const c of candidates) {

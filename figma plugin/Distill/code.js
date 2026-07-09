@@ -274,6 +274,19 @@
     }
     for (const item of Object.values(value)) collectVariableAliasIds(item, ids);
   }
+  function collectVariableAliasRefs(value, consumer, refs) {
+    if (!value || typeof value !== "object") return;
+    if ("type" in value && value.type === "VARIABLE_ALIAS" && "id" in value) {
+      const id = value.id;
+      if (typeof id === "string") refs.push({ id, consumer });
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const item of value) collectVariableAliasRefs(item, consumer, refs);
+      return;
+    }
+    for (const item of Object.values(value)) collectVariableAliasRefs(item, consumer, refs);
+  }
   async function auditLibraries() {
     var _a, _b, _c, _d, _e, _f, _g;
     const localCollections = await figma.variables.getLocalVariableCollectionsAsync();
@@ -299,6 +312,7 @@
     }
     const styleIds = /* @__PURE__ */ new Set();
     const boundVariableIds = /* @__PURE__ */ new Set();
+    const boundVariableRefs = [];
     const styleNodes = figma.currentPage.findAll();
     function addStyleId(value) {
       if (typeof value === "string" && value) styleIds.add(value);
@@ -308,7 +322,10 @@
       if ("strokeStyleId" in node) addStyleId(node.strokeStyleId);
       if ("textStyleId" in node) addStyleId(node.textStyleId);
       if ("effectStyleId" in node) addStyleId(node.effectStyleId);
-      if ("boundVariables" in node) collectVariableAliasIds(node.boundVariables, boundVariableIds);
+      if ("boundVariables" in node) {
+        collectVariableAliasIds(node.boundVariables, boundVariableIds);
+        collectVariableAliasRefs(node.boundVariables, node, boundVariableRefs);
+      }
     }
     const remoteStyleNames = [];
     const remoteTextStyleRecords = [];
@@ -324,6 +341,8 @@
     const remoteVariables = [];
     const remoteAvailableVariables = [];
     const remoteBoundVariables = [];
+    const remoteColorValueNames = /* @__PURE__ */ new Map();
+    const colorVariableIdsByValue = /* @__PURE__ */ new Map();
     const remoteLibraryNames = /* @__PURE__ */ new Set();
     let remoteCollections = 0;
     try {
@@ -350,6 +369,19 @@
         const remoteVar = { name: variable.name, resolvedType: variable.resolvedType, collectionName: variable.variableCollectionId };
         remoteVariables.push(remoteVar);
         remoteBoundVariables.push(remoteVar);
+        if (variable.resolvedType === "COLOR") {
+          for (const ref of boundVariableRefs.filter((ref2) => ref2.id === id)) {
+            try {
+              const resolved = variable.resolveForConsumer(ref.consumer);
+              if (resolved.resolvedType === "COLOR") {
+                const valueKey = colorValueToString(resolved.value, true);
+                remoteColorValueNames.set(valueKey, variable.name);
+                if (!colorVariableIdsByValue.has(valueKey)) colorVariableIdsByValue.set(valueKey, variable.id);
+              }
+            } catch (e) {
+            }
+          }
+        }
         try {
           const collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId);
           if (collection == null ? void 0 : collection.remote) remoteLibraryNames.add(collection.name);
@@ -407,8 +439,15 @@
       const col = localCollections.find((c) => c.id === v.variableCollectionId);
       if (!col) continue;
       const val = resolveVariableValue(v.valuesByMode[col.defaultModeId], localVariables, localCollections);
-      if (v.resolvedType === "COLOR") valueNamesByGroup.colors.set(colorValueToString(val, true), v.name);
+      if (v.resolvedType === "COLOR") {
+        const valueKey = colorValueToString(val, true);
+        valueNamesByGroup.colors.set(valueKey, v.name);
+        colorVariableIdsByValue.set(valueKey, v.id);
+      }
       if (v.resolvedType === "FLOAT" && v.name.toLowerCase().includes("radius") && typeof val === "number") valueNamesByGroup.radius.set(String(val), v.name);
+    }
+    for (const [value, name] of remoteColorValueNames) {
+      if (!valueNamesByGroup.colors.has(value)) valueNamesByGroup.colors.set(value, name);
     }
     for (const s of localTextStyles) valueNamesByGroup.typography.set(s.name, s.name);
     const colorCollectionName = (_c = (_b = localCollections.find((c) => c.name.toLowerCase().includes("color"))) == null ? void 0 : _b.name) != null ? _c : COLOR_COLLECTION;
@@ -464,6 +503,7 @@
       remoteComponentNames: [...remoteComponentNames],
       namesByGroup,
       valueNamesByGroup,
+      colorVariableIdsByValue,
       colorPrefix: mostCommonPrefix(colorNames, "color"),
       radiusPrefix: mostCommonPrefix(radiusNames, "radius")
     };
@@ -911,7 +951,16 @@
     const collection = getOrCreateCollection((_a = currentAudit == null ? void 0 : currentAudit.summary.colorCollectionName) != null ? _a : COLOR_COLLECTION);
     const byKey = /* @__PURE__ */ new Map();
     for (const c of candidates) {
-      const v = c.status === "new" ? upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, "COLOR", collection) : (_b = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "COLOR")) != null ? _b : null;
+      let v = null;
+      if (c.status === "new") {
+        v = upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, "COLOR", collection);
+      } else {
+        v = (_b = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "COLOR")) != null ? _b : null;
+        if (!v) {
+          const id = currentAudit == null ? void 0 : currentAudit.colorVariableIdsByValue.get(hexColor(c.value));
+          if (id) v = await figma.variables.getVariableByIdAsync(id);
+        }
+      }
       if (v) byKey.set(c.valueKey, v);
     }
     for (const c of candidates) {
