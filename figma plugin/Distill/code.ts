@@ -185,6 +185,9 @@ function hexColor(c: TokenColor): string {
   if (c.a < 0.999) return `#${hex}${Math.round(c.a * 255).toString(16).padStart(2, '0')}`
   return `#${hex}`
 }
+function alphaPercent(c: TokenColor): number {
+  return Math.round(c.a * 100)
+}
 function solidPaint(c: TokenColor): SolidPaint {
   return { type: 'SOLID', color: { r: c.r, g: c.g, b: c.b }, opacity: c.a }
 }
@@ -609,7 +612,12 @@ function suggestColorName(audit: LibraryAudit, c: TokenColor): string {
   const existing = audit.valueNamesByGroup.colors.get(hexColor(c))
   if (existing) return existing
   const hex = rgbToHex(c.r, c.g, c.b)
-  if (c.a < 0.999) return `${audit.colorPrefix}/${hex}-alpha-${Math.round(c.a * 100)}`
+  if (c.a < 0.999) {
+    const alpha = alphaPercent(c)
+    if (hex === '000000') return `black-alpha/${alpha}`
+    if (hex === 'ffffff') return `white-alpha/${alpha}`
+    return `alpha/${hex}/${alpha}`
+  }
   return `${audit.colorPrefix}/${hex}`
 }
 function defaultTypographyName(fontSize: number, fontWeight: number, fontStyle: string, families: Set<string>, family: string): string {
