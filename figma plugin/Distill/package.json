@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "build": "esbuild code.ts --bundle --target=es2017 --format=iife --outfile=code.js",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test": "esbuild tests/safety.test.mjs --bundle --platform=node --format=cjs --outfile=/tmp/distill-safety.test.cjs && node --test /tmp/distill-safety.test.cjs"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.130.0",

@@ -13,6 +13,10 @@ Distill 采用安全的四阶段流程：
 
 预览阶段不创建变量、不创建文字样式、不绑定图层。只有用户点击某个分组的提交按钮后，插件才会改动当前 Figma 文件。
 
+提取结果与当时的直接选区绑定。用户在审核期间改变选区后，旧候选会立即失效，必须重新点击「提取候选」，避免把旧候选绑定到新的图层。
+
+提交前插件会再次检测设计库。如果候选状态或目标名称因为 Undo、Redo、手动编辑或其他插件操作发生变化，本次提交会停止，并要求用户审核刷新后的候选。
+
 ## 设计库检测
 
 插件会检测本地资源和已引用的库资源。
@@ -79,6 +83,8 @@ Colors 从当前选中节点及其子节点的可见 fills 和 strokes 中提取
 
 因为 Figma Paint Style 绑定的是整个 fills 或 strokes 属性，所以当同一个属性里有多个 paint 时，插件会把整组 paints 作为一个 style 候选，而不是只保存其中一个渐变 stop。
 
+同一个 fills 或 strokes 属性只要包含至少一个可见渐变，该属性就完全由 Paint Style 管理。插件不会再为同一属性中的纯色 paint 同时生成 Variable 绑定任务，避免 Paint Style 与 Variable 在提交时互相覆盖。
+
 ### 匹配
 
 Colors 采用值优先匹配。
@@ -128,6 +134,8 @@ Colors 采用值优先匹配。
 
 提交 Colors 后，纯色会把对应 variable 绑定回提取时记录的 fills 和 strokes；渐变会把对应 Paint Style 绑定回提取时记录的 fills 或 strokes。
 
+绑定前会再次核对图层当前的 paint 值。图层在预览后发生变化时，该引用会被跳过并显示未完成，不会用旧候选覆盖新颜色。
+
 ## Typography 规则
 
 ### 提取
@@ -153,7 +161,9 @@ Typography 采用属性优先匹配，而不是名称优先。
 
 核心签名为：
 
-`normalizedFontFamily + roundedFontSize + numericFontWeight`
+`normalizedFontFamily + roundedFontSize + numericFontWeight + normalizedFontStyleVariant`
+
+其中 `normalizedFontStyleVariant` 用于区分字体姿态和其他字体变体。例如 `Medium`、`Medium Italic`、`Medium Oblique` 会形成三个不同签名，不会因为数字字重都为 500 而被合并。
 
 如果本地或已引用的远程 Text Style 中存在相同核心签名，则标记为 `match`，并使用已有 style 名称。
 
@@ -223,6 +233,8 @@ Typography 采用属性优先匹配，而不是名称优先。
 
 提交 Typography 后，会绑定回提取时记录的 Text 节点。
 
+绑定前会再次核对 Text 节点的字体家族、字号和字重。属性在预览后发生变化时，该引用会被跳过。
+
 ## Radius 规则
 
 ### 提取
@@ -273,6 +285,16 @@ Radius 的绑定范围是保守的。
 如果当前直接选中的是 Frame，只处理这个 Frame 自身，不处理它内部的子图层。
 
 如果是单独四角圆角，只绑定当前图层实际存在的角属性，不会把单角圆角误绑定成四角统一圆角。
+
+Radius 使用点击提交时保存的直接选区快照。即使提交执行期间用户改变选区，也不会把旧候选绑定到后来选中的图层。
+
+## 提交安全规则
+
+- `new` 不会覆盖同名已有变量或文字样式；提交时发现同名不同值会停止该项。
+- 只有资源创建或复用成功，并且计划中的绑定全部成功后，候选才会标记为 `applied`。
+- 创建成功但绑定失败属于未完成状态，面板会显示实际绑定数量和错误原因。
+- 只有 `new` 项才会按需创建本地 collection；全部为 `match` 时不会创建空 collection。
+- Colors、Typography、Radius 都会在提交前重新检测设计库，避免使用过期缓存。
 
 ## 审核面板规则
 

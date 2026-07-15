@@ -1,3 +1,5 @@
+import { isCompleteOutcome, sameOrderedIds, typographyStyleVariant, visibleGradientIndex, type ApplyCandidateOutcome } from './safety'
+
 type TokenGroup = 'colors' | 'typography' | 'radius'
 type TokenStatus = 'match' | 'new' | 'conflict' | 'invalid' | 'skip' | 'applied'
 type ExportFormat = 'json' | 'css'
@@ -136,6 +138,7 @@ type BoundVariableRef = {
 }
 type Proposal = {
   audit: AuditSummary
+  selectionIds: string[]
   groups: Record<TokenGroup, TokenCandidate[]>
   summaries: Record<TokenGroup, GroupSummary>
 }
@@ -155,10 +158,6 @@ const DISPLAY_NAME = 'Distill'
 const COLOR_COLLECTION = 'Colors'
 const TYPOGRAPHY_COLLECTION = 'Typography'
 const RADIUS_COLLECTION = 'Radius'
-const ALPHA_STEPS = [10, 20, 30, 40, 50, 60, 70, 80, 90]
-const FRAME_COLOR_NAME = '🎨 Colors'
-const FRAME_FONT_NAME = '🎨 Typography'
-const FRAME_RADIUS_NAME = '🎨 Radius'
 
 let isExecuting = false
 let activeAction: ActiveAction = null
@@ -182,6 +181,15 @@ function summarizeProposal(groups: Record<TokenGroup, TokenCandidate[]>): Record
 }
 function normalizeName(name: string): string {
   return name.trim().replace(/\s*\/\s*/g, '/').replace(/\s+/g, '-')
+}
+function currentSelection(): SceneNode[] {
+  return figma.currentPage.selection.filter((node): node is SceneNode => 'type' in node)
+}
+function selectionIds(nodes: readonly SceneNode[] = currentSelection()): string[] {
+  return nodes.map(node => node.id)
+}
+function proposalSelectionIsCurrent(proposal: Proposal): boolean {
+  return sameOrderedIds(proposal.selectionIds, selectionIds())
 }
 function round2(value: number): number {
   return Math.round(value * 100) / 100
@@ -222,9 +230,6 @@ function colorStopToHex(stop: ColorStop): string {
 }
 function alphaPercent(c: TokenColor): number {
   return Math.round(c.a * 100)
-}
-function solidPaint(c: TokenColor): SolidPaint {
-  return { type: 'SOLID', color: { r: c.r, g: c.g, b: c.b }, opacity: c.a }
 }
 function isGradientPaint(paint: Paint): paint is GradientPaint {
   return paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND'
@@ -398,13 +403,17 @@ function normalizeWeightName(style: string): string {
   if (/^\d+$/.test(num)) return numericToWeightName(parseInt(num))
   return num.replace(/italic$/, '').replace(/oblique$/, '') || 'regular'
 }
-function weightLabel(fontStyle: string, fontWeight: number): string {
-  const normalized = normalizeWeightName(fontStyle)
-  if (normalized.startsWith('w') && /^w\d+$/.test(normalized)) return normalized
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
+function weightLabel(fontStyle: string): string {
+  const weight = numericToWeightName(styleToNumericWeight(fontStyle))
+  const base = weight.charAt(0).toUpperCase() + weight.slice(1)
+  const variant = typographyStyleVariant(fontStyle)
+  if (variant === 'normal') return base
+  if (variant === 'italic') return `${base} Italic`
+  if (variant === 'oblique') return `${base} Oblique`
+  return fontStyle.trim().replace(/\s+/g, ' ')
 }
-function typographySignature(fontFamily: string, fontSize: number, fontWeight: number): string {
-  return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}`
+function typographySignature(fontFamily: string, fontSize: number, fontWeight: number, fontStyle: string): string {
+  return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}|${typographyStyleVariant(fontStyle)}`
 }
 function typographyFamilySizeKey(fontFamily: string, fontSize: number): string {
   return `${cleanKey(fontFamily)}|${round2(fontSize)}`
@@ -430,7 +439,7 @@ function typographyRecordFromStyle(style: TextStyle): TypographyStyleRecord {
     fontWeight,
     lineHeightPx: lineHeightToPx(style.lineHeight, style.fontSize),
     letterSpacingPx: letterSpacingToPx(style.letterSpacing, style.fontSize),
-    signature: typographySignature(style.fontName.family, style.fontSize, fontWeight),
+    signature: typographySignature(style.fontName.family, style.fontSize, fontWeight, style.fontName.style),
     remote: style.remote,
   }
 }
@@ -841,9 +850,9 @@ function nearestSameSizeTypographyTemplate(
   }
   return best
 }
-function typographyNameFromTemplate(template: TypographyNameTemplate, fontStyle: string, fontWeight: number): string {
+function typographyNameFromTemplate(template: TypographyNameTemplate, fontStyle: string): string {
   const segments = [...template.prefixSegments, ...template.roleSegments]
-  if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight))
+  if (template.weightIndex !== null) segments.push(weightLabel(fontStyle))
   return segments.join('/')
 }
 function suggestTypographyName(
@@ -856,14 +865,14 @@ function suggestTypographyName(
 ): string {
   const fallback = defaultTypographyName(fontSize, fontWeight, fontStyle, families, fontFamily)
   const sameSizeTemplate = nearestSameSizeTypographyTemplate(audit, fontFamily, fontSize, fontWeight)
-  if (sameSizeTemplate) return typographyNameFromTemplate(sameSizeTemplate, fontStyle, fontWeight)
+  if (sameSizeTemplate) return typographyNameFromTemplate(sameSizeTemplate, fontStyle)
   const template = nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight)
   if (!template) return fallback
   const desiredRole = roleToStyleName(classifyStyle(fontSize, fontWeight))
   const desiredRoleFamily = roleFamily(desiredRole)
   const roleSegments = template.roleFamily === desiredRoleFamily ? template.roleSegments : [desiredRole]
   const adaptedTemplate: TypographyNameTemplate = { ...template, roleSegments }
-  return typographyNameFromTemplate(adaptedTemplate, fontStyle, fontWeight)
+  return typographyNameFromTemplate(adaptedTemplate, fontStyle)
 }
 function formatSizeName(fontSize: number): string {
   return Number.isInteger(fontSize) ? String(fontSize) : String(round2(fontSize))
@@ -903,7 +912,7 @@ function withTypographyDisambiguation(candidates: TypographyCandidate[], audit: 
     if (uniqueSignatures.size < 2) continue
     for (const candidate of group) {
       if (candidate.nameOverride) continue
-      const disambiguatedName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`
+      const disambiguatedName = `${candidate.targetName}/${weightLabel(candidate.fontStyle)}`
       candidate.suggestedName = disambiguatedName
       candidate.targetName = disambiguatedName
     }
@@ -1054,8 +1063,7 @@ function radiusPropertiesForNode(node: SceneNode): Array<{ value: number; proper
   return [...byValue.entries()].map(([value, properties]) => ({ value, properties }))
 }
 
-function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, TokenCandidate[]> {
-  const selection = figma.currentPage.selection.filter((n): n is SceneNode => 'type' in n)
+function collectSelectionCandidates(audit: LibraryAudit, selection: readonly SceneNode[]): Record<TokenGroup, TokenCandidate[]> {
   const colors = new Map<string, ColorCandidate>()
   const typography = new Map<string, TypographyCandidate>()
   const radius = new Map<string, RadiusCandidate>()
@@ -1128,71 +1136,45 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
     }
   }
 
+  function collectPaintProperty(node: SceneNode, property: 'fills' | 'strokes', paints: readonly Paint[]): void {
+    const visiblePaints = paints.filter(paint => paint.visible !== false)
+    const gradientIndex = visibleGradientIndex(paints)
+    if (gradientIndex >= 0) {
+      const gradient = paints[gradientIndex]
+      if (isGradientPaint(gradient)) addGradientRef(paints, gradient, node, property, gradientIndex)
+      return
+    }
+    visiblePaints.forEach(paint => {
+      if (paint.type !== 'SOLID') return
+      const paintIndex = paints.indexOf(paint)
+      const value = { ...paint.color, a: paint.opacity ?? 1 }
+      const key = colorKey(value)
+      const existing = colors.get(key)
+      const ref: BindingRef = { group: 'colors', nodeId: node.id, property, paintIndex, key }
+      if (existing) existing.refs.push(ref)
+      else {
+        const suggestedName = suggestColorName(audit, value)
+        const candidate: SolidColorCandidate = {
+          id: `color:${key}`,
+          group: 'colors',
+          kind: 'solid',
+          status: 'new',
+          suggestedName,
+          targetName: suggestedName,
+          selected: true,
+          value,
+          valueKey: key,
+          hex: hexColor(value),
+          refs: [ref],
+        }
+        colors.set(key, classifyCandidate(candidate, audit, value))
+      }
+    })
+  }
+
   function collect(node: SceneNode): void {
-    if ('fills' in node && Array.isArray(node.fills)) {
-      node.fills.forEach((paint, paintIndex) => {
-        if (paint.visible === false) return
-        if (isGradientPaint(paint)) {
-          addGradientRef(node.fills as readonly Paint[], paint, node, 'fills', paintIndex)
-          return
-        }
-        if (paint.type !== 'SOLID') return
-        const value = { ...paint.color, a: paint.opacity ?? 1 }
-        const key = colorKey(value)
-        const existing = colors.get(key)
-        const ref: BindingRef = { group: 'colors', nodeId: node.id, property: 'fills', paintIndex, key }
-        if (existing) existing.refs.push(ref)
-        else {
-          const suggestedName = suggestColorName(audit, value)
-          const candidate: ColorCandidate = {
-            id: `color:${key}`,
-            group: 'colors',
-            kind: 'solid',
-            status: 'new',
-            suggestedName,
-            targetName: suggestedName,
-            selected: true,
-            value,
-            valueKey: key,
-            hex: hexColor(value),
-            refs: [ref],
-          }
-          colors.set(key, classifyCandidate(candidate, audit, value))
-        }
-      })
-    }
-    if ('strokes' in node && Array.isArray(node.strokes)) {
-      node.strokes.forEach((paint, paintIndex) => {
-        if (paint.visible === false) return
-        if (isGradientPaint(paint)) {
-          addGradientRef(node.strokes as readonly Paint[], paint, node, 'strokes', paintIndex)
-          return
-        }
-        if (paint.type !== 'SOLID') return
-        const value = { ...paint.color, a: paint.opacity ?? 1 }
-        const key = colorKey(value)
-        const existing = colors.get(key)
-        const ref: BindingRef = { group: 'colors', nodeId: node.id, property: 'strokes', paintIndex, key }
-        if (existing) existing.refs.push(ref)
-        else {
-          const suggestedName = suggestColorName(audit, value)
-          const candidate: ColorCandidate = {
-            id: `color:${key}`,
-            group: 'colors',
-            kind: 'solid',
-            status: 'new',
-            suggestedName,
-            targetName: suggestedName,
-            selected: true,
-            value,
-            valueKey: key,
-            hex: hexColor(value),
-            refs: [ref],
-          }
-          colors.set(key, classifyCandidate(candidate, audit, value))
-        }
-      })
-    }
+    if ('fills' in node && Array.isArray(node.fills)) collectPaintProperty(node, 'fills', node.fills)
+    if ('strokes' in node && Array.isArray(node.strokes)) collectPaintProperty(node, 'strokes', node.strokes)
     if (node.type === 'TEXT' && node.fontName !== figma.mixed && typeof node.fontSize === 'number') {
       const fontName = node.fontName as FontName
       let lineHeightPx: number | null = null
@@ -1205,7 +1187,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
       }
       const fontWeight = styleToNumericWeight(fontName.style)
       const roleWeight = `${roleToStyleName(classifyStyle(node.fontSize, fontWeight))}/${fontName.style}`
-      const key = typographySignature(fontName.family, node.fontSize, fontWeight)
+      const key = typographySignature(fontName.family, node.fontSize, fontWeight, fontName.style)
       const existing = typography.get(key)
       const ref: BindingRef = { group: 'typography', nodeId: node.id, key }
       if (existing) existing.refs.push(ref)
@@ -1238,10 +1220,13 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
 }
 
 async function buildProposal(): Promise<Proposal> {
-  const audit = currentAudit ?? await auditLibraries()
+  const selection = currentSelection()
+  const selectedIds = selectionIds(selection)
+  const audit = await auditLibraries()
+  if (!sameOrderedIds(selectedIds, selectionIds())) throw new Error('检测期间选区发生变化，请重新提取候选')
   currentAudit = audit
-  const groups = collectSelectionCandidates(audit)
-  return { audit: audit.summary, groups, summaries: summarizeProposal(groups) }
+  const groups = collectSelectionCandidates(audit, selection)
+  return { audit: audit.summary, selectionIds: selectedIds, groups, summaries: summarizeProposal(groups) }
 }
 function postState(extra?: Record<string, unknown>): void {
   figma.ui.postMessage({
@@ -1253,9 +1238,6 @@ function postState(extra?: Record<string, unknown>): void {
     proposal: currentProposal,
     ...extra,
   })
-}
-function findCandidate(group: TokenGroup, id: string): TokenCandidate | null {
-  return currentProposal?.groups[group].find(c => c.id === id) ?? null
 }
 function renameCandidate(group: TokenGroup, id: string, targetName: string): void {
   if (!currentProposal || !currentAudit) return
@@ -1281,53 +1263,114 @@ function toggleCandidateSelection(group: TokenGroup, id: string, selected: boole
     return { ...c, selected } as TokenCandidate
   })
 }
+function candidateClassificationValue(candidate: TokenCandidate): VariableValue | string {
+  if (candidate.group === 'colors') return candidate.kind === 'gradient' ? candidate.valueKey : candidate.value
+  if (candidate.group === 'radius') return candidate.value
+  return candidate.targetName
+}
+function reclassifyGroup(group: TokenGroup, audit: LibraryAudit): void {
+  if (!currentProposal) return
+  const candidates = currentProposal.groups[group].map(candidate => {
+    if (candidate.status === 'applied' || candidate.status === 'skip') return candidate
+    const reset = { ...candidate, status: 'new' as TokenStatus, reason: undefined }
+    if (reset.group === 'typography') {
+      delete reset.matchedStyleId
+      delete reset.matchedStyleRemote
+    }
+    return classifyCandidate(reset as TokenCandidate, audit, candidateClassificationValue(reset as TokenCandidate))
+  })
+  const groups = validateDuplicates({ ...currentProposal.groups, [group]: candidates }, audit)
+  currentProposal.groups = sortCandidateGroups(groups)
+  currentProposal.audit = audit.summary
+  currentProposal.summaries = summarizeProposal(currentProposal.groups)
+}
 function getOrCreateCollection(name: string): VariableCollection {
   const existing = currentAudit?.localCollections.find(c => c.name === name)
-  return existing ?? figma.variables.createVariableCollection(name)
+  if (existing) return existing
+  const collection = figma.variables.createVariableCollection(name)
+  currentAudit?.localCollections.push(collection)
+  return collection
 }
 function getNode(id: string): SceneNode | null {
   const node = figma.getNodeById(id)
   return node && 'type' in node ? node as SceneNode : null
 }
-function upsertVariable(name: string, value: VariableValue, type: VariableResolvedDataType, collection: VariableCollection): Variable | null {
+function createOrReuseVariable(name: string, value: VariableValue, type: VariableResolvedDataType, collection: VariableCollection): Variable | null {
   const existing = currentAudit?.localVariables.find(v => v.variableCollectionId === collection.id && v.name === name)
   if (existing) {
     if (existing.resolvedType !== type) return null
-    try {
-      existing.setValueForMode(collection.defaultModeId, value)
-      return existing
-    } catch {
-      return null
-    }
+    const existingValue = existing.valuesByMode[collection.defaultModeId]
+    return valuesEqual(existingValue, value) ? existing : null
   }
+  let created: Variable | null = null
   try {
     const v = figma.variables.createVariable(name, collection, type)
+    created = v
     v.setValueForMode(collection.defaultModeId, value)
+    currentAudit?.localVariables.push(v)
     return v
   } catch {
+    if (created) {
+      try {
+        created.remove()
+      } catch {
+        // The failed variable may already have been removed by Figma.
+      }
+    }
     return null
   }
 }
-async function applyColors(candidates: ColorCandidate[]): Promise<number> {
+function makeOutcome(expectedBindings = 0): ApplyCandidateOutcome {
+  return { resourceReady: false, expectedBindings, boundBindings: 0, errors: [] }
+}
+function addOutcomeError(outcome: ApplyCandidateOutcome, message: string): void {
+  if (!outcome.errors.includes(message)) outcome.errors.push(message)
+}
+async function applyColors(candidates: ColorCandidate[]): Promise<Map<string, ApplyCandidateOutcome>> {
   let collection: VariableCollection | null = null
   const byKey = new Map<string, Variable>()
   const paintStyleIdsByKey = new Map<string, string>()
+  const outcomes = new Map<string, ApplyCandidateOutcome>()
   for (const c of candidates) {
+    const uniqueRefs = new Set(c.refs.map(ref => ref.group === 'colors' ? `${ref.nodeId}:${ref.property}:${c.kind === 'gradient' ? 'style' : ref.paintIndex}` : ''))
+    const outcome = makeOutcome(uniqueRefs.size)
+    outcomes.set(c.id, outcome)
     if (c.kind === 'gradient') {
       let styleId = currentAudit?.paintStyleIdsByKey.get(c.valueKey) ?? null
       if (c.status === 'new') {
-        const style = figma.createPaintStyle()
-        style.name = c.targetName
-        style.paints = clonePaints(c.paints)
-        styleId = style.id
+        if (currentAudit?.localPaintStyles.some(style => style.name === c.targetName)) {
+          addOutcomeError(outcome, '提交时发现同名颜色样式')
+        } else {
+          let createdStyle: PaintStyle | null = null
+          try {
+            const style = figma.createPaintStyle()
+            createdStyle = style
+            style.name = c.targetName
+            style.paints = clonePaints(c.paints)
+            currentAudit?.localPaintStyles.push(style)
+            styleId = style.id
+          } catch {
+            if (createdStyle) {
+              try {
+                createdStyle.remove()
+              } catch {
+                // The failed style may already have been removed by Figma.
+              }
+            }
+            addOutcomeError(outcome, '渐变样式创建失败')
+          }
+        }
       }
-      if (styleId) paintStyleIdsByKey.set(c.valueKey, styleId)
+      if (styleId) {
+        paintStyleIdsByKey.set(c.valueKey, styleId)
+        outcome.resourceReady = true
+      } else if (outcome.errors.length === 0) addOutcomeError(outcome, '没有可用的渐变样式')
       continue
     }
     let v: Variable | null = null
     if (c.status === 'new') {
       collection = collection ?? getOrCreateCollection(currentAudit?.summary.colorCollectionName ?? COLOR_COLLECTION)
-      v = upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, 'COLOR', collection)
+      v = createOrReuseVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, 'COLOR', collection)
     } else {
       v = currentAudit?.localVariables.find(v => v.name === c.targetName && v.resolvedType === 'COLOR') ?? null
       if (!v) {
@@ -1335,29 +1378,45 @@ async function applyColors(candidates: ColorCandidate[]): Promise<number> {
         if (id) v = await figma.variables.getVariableByIdAsync(id)
       }
     }
-    if (v) byKey.set(c.valueKey, v)
+    if (v) {
+      byKey.set(c.valueKey, v)
+      outcome.resourceReady = true
+    } else addOutcomeError(outcome, '颜色变量不存在或发生同名冲突')
   }
   for (const c of candidates) {
+    const outcome = outcomes.get(c.id)!
+    if (!outcome.resourceReady) continue
+    const processed = new Set<string>()
     if (c.kind === 'gradient') {
       const styleId = paintStyleIdsByKey.get(c.valueKey)
       if (!styleId) continue
       for (const ref of c.refs) {
         if (ref.group !== 'colors') continue
+        const refKey = `${ref.nodeId}:${ref.property}`
+        if (processed.has(refKey)) continue
+        processed.add(refKey)
         const node = getNode(ref.nodeId)
-        if (!node) continue
+        if (!node) {
+          addOutcomeError(outcome, '待绑定图层已不存在')
+          continue
+        }
         try {
           if (ref.property === 'fills' && 'fillStyleId' in node) {
+            if (!Array.isArray(node.fills) || paintListKey(node.fills) !== c.valueKey) throw new Error('fills 已变化')
             const fillNode = node as SceneNode & { fillStyleId: string; setFillStyleIdAsync?: (styleId: string) => Promise<void> }
             if (fillNode.setFillStyleIdAsync) await fillNode.setFillStyleIdAsync(styleId)
             else fillNode.fillStyleId = styleId
+            outcome.boundBindings++
           }
           if (ref.property === 'strokes' && 'strokeStyleId' in node) {
+            if (!Array.isArray(node.strokes) || paintListKey(node.strokes) !== c.valueKey) throw new Error('strokes 已变化')
             const strokeNode = node as SceneNode & { strokeStyleId: string; setStrokeStyleIdAsync?: (styleId: string) => Promise<void> }
             if (strokeNode.setStrokeStyleIdAsync) await strokeNode.setStrokeStyleIdAsync(styleId)
             else strokeNode.strokeStyleId = styleId
+            outcome.boundBindings++
           }
         } catch {
-          // Paint style binding is best effort; style creation remains valid.
+          addOutcomeError(outcome, '图层颜色已变化或样式绑定失败')
         }
       }
       continue
@@ -1366,28 +1425,41 @@ async function applyColors(candidates: ColorCandidate[]): Promise<number> {
     if (!v) continue
     for (const ref of c.refs) {
       if (ref.group !== 'colors') continue
+      const refKey = `${ref.nodeId}:${ref.property}:${ref.paintIndex}`
+      if (processed.has(refKey)) continue
+      processed.add(refKey)
       const node = getNode(ref.nodeId)
-      if (!node || !(ref.property in node)) continue
+      if (!node || !(ref.property in node)) {
+        addOutcomeError(outcome, '待绑定图层已不存在')
+        continue
+      }
       const paints = (ref.property === 'fills' && 'fills' in node ? node.fills : ref.property === 'strokes' && 'strokes' in node ? node.strokes : []) as readonly Paint[]
       const nextPaints = paints.slice()
       const paint = paints[ref.paintIndex]
-      if (!paint || paint.type !== 'SOLID') continue
+      if (!paint || paint.type !== 'SOLID' || colorKey({ ...paint.color, a: paint.opacity ?? 1 }) !== c.valueKey) {
+        addOutcomeError(outcome, '图层颜色已变化，已跳过绑定')
+        continue
+      }
       nextPaints[ref.paintIndex] = figma.variables.setBoundVariableForPaint(paint, 'color', v)
       try {
         if (ref.property === 'fills' && 'fills' in node) node.fills = nextPaints
         if (ref.property === 'strokes' && 'strokes' in node) node.strokes = nextPaints
+        outcome.boundBindings++
       } catch {
-        // Binding is best effort; creation remains valid even when a node cannot be mutated.
+        addOutcomeError(outcome, '颜色变量绑定失败')
       }
     }
   }
-  return byKey.size
+  return outcomes
 }
-async function applyTypography(candidates: TypographyCandidate[]): Promise<number> {
-  const collection = getOrCreateCollection(currentAudit?.summary.typographyCollectionName ?? TYPOGRAPHY_COLLECTION)
+async function applyTypography(candidates: TypographyCandidate[]): Promise<Map<string, ApplyCandidateOutcome>> {
+  let collection: VariableCollection | null = null
   const existingStyles = await figma.getLocalTextStylesAsync()
   const byKey = new Map<string, TextStyle>()
+  const outcomes = new Map<string, ApplyCandidateOutcome>()
   for (const c of candidates) {
+    const outcome = makeOutcome(new Set(c.refs.map(ref => ref.nodeId)).size)
+    outcomes.set(c.id, outcome)
     if (c.status === 'match') {
       let matched: TextStyle | null = null
       if (c.matchedStyleId) {
@@ -1399,76 +1471,187 @@ async function applyTypography(candidates: TypographyCandidate[]): Promise<numbe
         }
       }
       if (!matched) matched = existingStyles.find(s => s.name === c.targetName) ?? null
-      if (matched) byKey.set(c.valueKey, matched)
+      if (matched) {
+        byKey.set(c.valueKey, matched)
+        outcome.resourceReady = true
+      } else addOutcomeError(outcome, '匹配的文字样式已不可用')
       continue
     }
-    upsertVariable(`${c.targetName}/font-size`, c.fontSize, 'FLOAT', collection)
-    upsertVariable(`${c.targetName}/font-weight`, c.fontWeight, 'FLOAT', collection)
-    upsertVariable(`${c.targetName}/font-family`, c.fontFamily, 'STRING', collection)
-    if (c.lineHeightPx === null || c.lineHeightPx === 0) upsertVariable(`${c.targetName}/line-height`, 'auto', 'STRING', collection)
-    else upsertVariable(`${c.targetName}/line-height`, c.lineHeightPx, 'FLOAT', collection)
-    upsertVariable(`${c.targetName}/letter-spacing`, c.letterSpacingPx, 'FLOAT', collection)
-
-    let style = existingStyles.find(s => s.name === c.targetName)
+    if (existingStyles.some(style => style.name === c.targetName)) {
+      addOutcomeError(outcome, '提交时发现同名文字样式')
+      continue
+    }
+    let createdStyle: TextStyle | null = null
+    const createdVariables: Variable[] = []
+    let createdCollection: VariableCollection | null = null
     try {
       await figma.loadFontAsync({ family: c.fontFamily, style: c.fontStyle })
-      if (!style) {
-        style = figma.createTextStyle()
-        style.name = c.targetName
+      const latestStyles = await figma.getLocalTextStylesAsync()
+      if (latestStyles.some(style => style.name === c.targetName)) {
+        addOutcomeError(outcome, '字体加载期间出现同名文字样式')
+        continue
       }
+      const style = figma.createTextStyle()
+      createdStyle = style
+      style.name = c.targetName
       style.fontName = { family: c.fontFamily, style: c.fontStyle }
       style.fontSize = c.fontSize
       style.lineHeight = c.lineHeightPx === null || c.lineHeightPx === 0 ? { unit: 'AUTO' } : { unit: 'PIXELS', value: c.lineHeightPx }
       style.letterSpacing = { unit: 'PIXELS', value: c.letterSpacingPx }
+      currentAudit?.localTextStyles.push(style)
+
+      if (!collection) {
+        const collectionName = currentAudit?.summary.typographyCollectionName ?? TYPOGRAPHY_COLLECTION
+        const existingCollection = currentAudit?.localCollections.find(item => item.name === collectionName) ?? null
+        collection = getOrCreateCollection(collectionName)
+        if (!existingCollection) createdCollection = collection
+      }
+      const variables: Array<[string, VariableValue, VariableResolvedDataType]> = [
+        [`${c.targetName}/font-size`, c.fontSize, 'FLOAT'],
+        [`${c.targetName}/font-weight`, c.fontWeight, 'FLOAT'],
+        [`${c.targetName}/font-family`, c.fontFamily, 'STRING'],
+        [`${c.targetName}/line-height`, c.lineHeightPx === null || c.lineHeightPx === 0 ? 'auto' : c.lineHeightPx, c.lineHeightPx === null || c.lineHeightPx === 0 ? 'STRING' : 'FLOAT'],
+        [`${c.targetName}/letter-spacing`, c.letterSpacingPx, 'FLOAT'],
+      ]
+      for (const [name, value, type] of variables) {
+        const existingVariable = currentAudit?.localVariables.find(variable => variable.variableCollectionId === collection!.id && variable.name === name) ?? null
+        const variable = createOrReuseVariable(name, value, type, collection)
+        if (!variable) throw new Error(`变量 ${name} 创建失败或同名冲突`)
+        if (!existingVariable) createdVariables.push(variable)
+      }
+      outcome.resourceReady = true
       byKey.set(c.valueKey, style)
-    } catch {
-      // Font unavailable; keep the proposal unresolved.
+    } catch (error) {
+      for (const variable of createdVariables) {
+        try {
+          variable.remove()
+        } catch {
+          // Rollback is best effort and never touches reused variables.
+        }
+      }
+      if (createdVariables.length > 0 && currentAudit) {
+        const createdIds = new Set(createdVariables.map(variable => variable.id))
+        currentAudit.localVariables = currentAudit.localVariables.filter(variable => !createdIds.has(variable.id))
+      }
+      if (createdStyle) {
+        try {
+          createdStyle.remove()
+        } catch {
+          // Rollback is best effort and never touches reused styles.
+        }
+        if (currentAudit) currentAudit.localTextStyles = currentAudit.localTextStyles.filter(style => style.id !== createdStyle?.id)
+      }
+      if (createdCollection) {
+        try {
+          createdCollection.remove()
+        } catch {
+          // The collection is harmless if Figma refuses to remove it.
+        }
+        if (currentAudit) currentAudit.localCollections = currentAudit.localCollections.filter(item => item.id !== createdCollection?.id)
+        collection = null
+      }
+      outcome.resourceReady = false
+      addOutcomeError(outcome, error instanceof Error ? error.message : '字体不可用或文字样式创建失败')
     }
   }
   for (const c of candidates) {
+    const outcome = outcomes.get(c.id)!
     const style = byKey.get(c.valueKey)
     if (!style) continue
+    const processed = new Set<string>()
     for (const ref of c.refs) {
       if (ref.group !== 'typography') continue
+      if (processed.has(ref.nodeId)) continue
+      processed.add(ref.nodeId)
       const node = getNode(ref.nodeId)
-      if (node?.type !== 'TEXT') continue
+      if (node?.type !== 'TEXT' || node.fontName === figma.mixed || typeof node.fontSize !== 'number') {
+        addOutcomeError(outcome, '待绑定文字图层已不存在或属性已混合')
+        continue
+      }
+      const currentWeight = styleToNumericWeight(node.fontName.style)
+      if (typographySignature(node.fontName.family, node.fontSize, currentWeight, node.fontName.style) !== c.valueKey) {
+        addOutcomeError(outcome, '文字属性已变化，已跳过绑定')
+        continue
+      }
       try {
         await node.setTextStyleIdAsync(style.id)
+        outcome.boundBindings++
       } catch {
-        // Best effort binding.
+        addOutcomeError(outcome, '文字样式绑定失败')
       }
     }
   }
-  return byKey.size
+  return outcomes
 }
-async function applyRadius(candidates: RadiusCandidate[]): Promise<number> {
-  const collection = getOrCreateCollection(currentAudit?.summary.radiusCollectionName ?? RADIUS_COLLECTION)
+async function applyRadius(candidates: RadiusCandidate[], selectedNodes: readonly SceneNode[]): Promise<Map<string, ApplyCandidateOutcome>> {
+  let collection: VariableCollection | null = null
   const byKey = new Map<string, Variable>()
+  const outcomes = new Map<string, ApplyCandidateOutcome>()
   for (const c of candidates) {
+    const outcome = makeOutcome()
+    outcomes.set(c.id, outcome)
+    if (c.status === 'new') collection = collection ?? getOrCreateCollection(currentAudit?.summary.radiusCollectionName ?? RADIUS_COLLECTION)
     const v = c.status === 'new'
-      ? upsertVariable(c.targetName, c.value, 'FLOAT', collection)
+      ? createOrReuseVariable(c.targetName, c.value, 'FLOAT', collection!)
       : currentAudit?.localVariables.find(v => v.name === c.targetName && v.resolvedType === 'FLOAT') ?? null
-    if (v) byKey.set(c.valueKey, v)
+    if (v) {
+      byKey.set(c.valueKey, v)
+      outcome.resourceReady = true
+    } else addOutcomeError(outcome, '圆角变量不存在或发生同名冲突')
   }
-  const selectedNodes = figma.currentPage.selection.filter((n): n is SceneNode => 'type' in n)
   for (const node of selectedNodes) {
     for (const item of radiusPropertiesForNode(node)) {
       const v = byKey.get(String(item.value))
       if (!v) continue
+      const candidate = candidates.find(c => c.valueKey === String(item.value))
+      if (!candidate) continue
+      const outcome = outcomes.get(candidate.id)!
       for (const property of item.properties) {
+        outcome.expectedBindings++
         try {
           node.setBoundVariable(property, v)
+          outcome.boundBindings++
         } catch {
-          // Best effort binding.
+          addOutcomeError(outcome, '圆角变量绑定失败')
         }
       }
     }
   }
-  return byKey.size
+  return outcomes
 }
 async function applyGroup(group: TokenGroup): Promise<void> {
   if (!currentProposal) return
-  const candidates = currentProposal.groups[group].filter((c): c is Extract<TokenCandidate, { group: typeof group }> => {
+  if (!proposalSelectionIsCurrent(currentProposal)) {
+    currentProposal = null
+    figma.notify('选区已变化，请重新提取候选', { error: true })
+    return
+  }
+  const intended = currentProposal.groups[group].filter(c => c.status === 'match' || (c.status === 'new' && c.selected !== false))
+  const intendedState = new Map(intended.map(candidate => [candidate.id, `${candidate.status}:${candidate.targetName}`]))
+  const freshAudit = await auditLibraries()
+  if (!currentProposal || !proposalSelectionIsCurrent(currentProposal)) {
+    currentProposal = null
+    figma.notify('检查期间选区发生变化，请重新提取候选', { error: true })
+    return
+  }
+  currentAudit = freshAudit
+  reclassifyGroup(group, freshAudit)
+  const libraryChanged = intended.some(candidate => {
+    const refreshed = currentProposal?.groups[group].find(item => item.id === candidate.id)
+    return !refreshed || intendedState.get(candidate.id) !== `${refreshed.status}:${refreshed.targetName}`
+  })
+  if (libraryChanged) {
+    figma.notify('设计库状态已变化，请审核更新后的候选后再提交', { error: true })
+    return
+  }
+  const proposal = currentProposal
+  const selectedNodes = currentSelection()
+  if (!proposal || !sameOrderedIds(proposal.selectionIds, selectionIds(selectedNodes))) {
+    currentProposal = null
+    figma.notify('提交前选区发生变化，请重新提取候选', { error: true })
+    return
+  }
+  const candidates = proposal.groups[group].filter((c): c is Extract<TokenCandidate, { group: typeof group }> => {
     if (c.status === 'match') return true
     return c.status === 'new' && c.selected !== false
   }) as TokenCandidate[]
@@ -1476,14 +1659,30 @@ async function applyGroup(group: TokenGroup): Promise<void> {
     figma.notify('没有可添加或绑定的 token')
     return
   }
-  let applied = 0
-  if (group === 'colors') applied = await applyColors(candidates as ColorCandidate[])
-  if (group === 'typography') applied = await applyTypography(candidates as TypographyCandidate[])
-  if (group === 'radius') applied = await applyRadius(candidates as RadiusCandidate[])
-  currentProposal.groups[group] = currentProposal.groups[group].map(c => candidates.some(a => a.id === c.id) ? { ...c, status: 'applied', reason: c.status === 'match' ? '已复用本地匹配项并绑定' : '已添加并绑定' } as TokenCandidate : c)
-  currentProposal.summaries = summarizeProposal(currentProposal.groups)
+  let outcomes = new Map<string, ApplyCandidateOutcome>()
+  if (group === 'colors') outcomes = await applyColors(candidates as ColorCandidate[])
+  if (group === 'typography') outcomes = await applyTypography(candidates as TypographyCandidate[])
+  if (group === 'radius') outcomes = await applyRadius(candidates as RadiusCandidate[], selectedNodes)
+  let completed = 0
+  proposal.groups[group] = proposal.groups[group].map(candidate => {
+    const outcome = outcomes.get(candidate.id)
+    if (!outcome) return candidate
+    if (isCompleteOutcome(outcome)) {
+      completed++
+      return {
+        ...candidate,
+        status: 'applied',
+        reason: candidate.status === 'match' ? '已复用匹配项并完成绑定' : '已添加并完成绑定',
+      } as TokenCandidate
+    }
+    const bindingDetail = outcome.expectedBindings > 0 ? `绑定 ${outcome.boundBindings}/${outcome.expectedBindings}` : '无需绑定当前图层'
+    const errorDetail = outcome.errors.length ? outcome.errors.join('；') : '提交未完成'
+    return { ...candidate, reason: `${bindingDetail}；${errorDetail}` } as TokenCandidate
+  })
+  proposal.summaries = summarizeProposal(proposal.groups)
   currentAudit = await auditLibraries()
-  figma.notify(`已添加 ${applied} 个 ${group} token 并尝试绑定`)
+  const failed = candidates.length - completed
+  figma.notify(failed > 0 ? `${group}：完成 ${completed} 个，未完成 ${failed} 个` : `${group}：已完成 ${completed} 个 token`, failed > 0 ? { error: true } : undefined)
 }
 
 async function buildExportPayload(): Promise<{
@@ -1535,7 +1734,13 @@ async function runExport(format: ExportFormat): Promise<void> {
 
 figma.root.setRelaunchData({ [TOOL_ID]: DISPLAY_NAME })
 figma.showUI(__html__, { width: 420, height: 640 })
-figma.on('selectionchange', () => postState())
+figma.on('selectionchange', () => {
+  if (currentProposal && !proposalSelectionIsCurrent(currentProposal)) {
+    currentProposal = null
+    figma.notify('选区已变化，请重新提取候选')
+  }
+  postState()
+})
 postState()
 
 figma.ui.onmessage = (msg: UiMsg) => {

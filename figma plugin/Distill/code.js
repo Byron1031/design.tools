@@ -20,6 +20,44 @@
   };
   var __spreadProps = (a, b) => __defProps(a, __getOwnPropDescs(b));
 
+  // safety.ts
+  var GRADIENT_TYPES = /* @__PURE__ */ new Set([
+    "GRADIENT_LINEAR",
+    "GRADIENT_RADIAL",
+    "GRADIENT_ANGULAR",
+    "GRADIENT_DIAMOND"
+  ]);
+  var FONT_WEIGHT_TOKENS = [
+    "ultralight",
+    "extralight",
+    "demibold",
+    "semibold",
+    "ultrabold",
+    "extrabold",
+    "regular",
+    "medium",
+    "hairline",
+    "thin",
+    "light",
+    "bold",
+    "black",
+    "heavy"
+  ];
+  function sameOrderedIds(a, b) {
+    return a.length === b.length && a.every((id, index) => id === b[index]);
+  }
+  function visibleGradientIndex(paints) {
+    return paints.findIndex((paint) => paint.visible !== false && GRADIENT_TYPES.has(paint.type));
+  }
+  function typographyStyleVariant(fontStyle) {
+    let variant = fontStyle.toLowerCase().replace(/[\s_-]+/g, "").replace(/\d+/g, "");
+    for (const token of FONT_WEIGHT_TOKENS) variant = variant.split(token).join("");
+    return variant || "normal";
+  }
+  function isCompleteOutcome(outcome) {
+    return outcome.resourceReady && outcome.boundBindings === outcome.expectedBindings && outcome.errors.length === 0;
+  }
+
   // code.ts
   var TOOL_ID = "9c676d1a-bbdf-48b8-8f4d-682bee3d9ac7";
   var DISPLAY_NAME = "Distill";
@@ -47,6 +85,15 @@
   }
   function normalizeName(name) {
     return name.trim().replace(/\s*\/\s*/g, "/").replace(/\s+/g, "-");
+  }
+  function currentSelection() {
+    return figma.currentPage.selection.filter((node) => "type" in node);
+  }
+  function selectionIds(nodes = currentSelection()) {
+    return nodes.map((node) => node.id);
+  }
+  function proposalSelectionIsCurrent(proposal) {
+    return sameOrderedIds(proposal.selectionIds, selectionIds());
   }
   function round2(value) {
     return Math.round(value * 100) / 100;
@@ -153,6 +200,17 @@
     const stops = paint.gradientStops.map((stop) => `${colorStopToHex(stop)} ${Math.round(stop.position * 100)}%`).join(", ");
     return `linear-gradient(90deg, ${stops})`;
   }
+  function valuesEqual(a, b) {
+    var _a, _b;
+    if (typeof a !== typeof b) return false;
+    if (typeof a === "number" || typeof a === "string" || typeof a === "boolean") return a === b;
+    if (a && b && typeof a === "object" && typeof b === "object" && "r" in a && "r" in b) {
+      const ca = a;
+      const cb = b;
+      return colorKey({ r: ca.r, g: ca.g, b: ca.b, a: (_a = ca.a) != null ? _a : 1 }) === colorKey({ r: cb.r, g: cb.g, b: cb.b, a: (_b = cb.a) != null ? _b : 1 });
+    }
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
   function resolveVariableValue(value, variables, collections, visited = /* @__PURE__ */ new Set()) {
     let current = value;
     while (current && typeof current === "object" && "type" in current && current.type === "VARIABLE_ALIAS") {
@@ -248,13 +306,17 @@
     if (/^\d+$/.test(num)) return numericToWeightName(parseInt(num));
     return num.replace(/italic$/, "").replace(/oblique$/, "") || "regular";
   }
-  function weightLabel(fontStyle, fontWeight) {
-    const normalized = normalizeWeightName(fontStyle);
-    if (normalized.startsWith("w") && /^w\d+$/.test(normalized)) return normalized;
-    return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+  function weightLabel(fontStyle) {
+    const weight = numericToWeightName(styleToNumericWeight(fontStyle));
+    const base = weight.charAt(0).toUpperCase() + weight.slice(1);
+    const variant = typographyStyleVariant(fontStyle);
+    if (variant === "normal") return base;
+    if (variant === "italic") return `${base} Italic`;
+    if (variant === "oblique") return `${base} Oblique`;
+    return fontStyle.trim().replace(/\s+/g, " ");
   }
-  function typographySignature(fontFamily, fontSize, fontWeight) {
-    return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}`;
+  function typographySignature(fontFamily, fontSize, fontWeight, fontStyle) {
+    return `${cleanKey(fontFamily)}|${round2(fontSize)}|${fontWeight}|${typographyStyleVariant(fontStyle)}`;
   }
   function typographyFamilySizeKey(fontFamily, fontSize) {
     return `${cleanKey(fontFamily)}|${round2(fontSize)}`;
@@ -280,7 +342,7 @@
       fontWeight,
       lineHeightPx: lineHeightToPx(style.lineHeight, style.fontSize),
       letterSpacingPx: letterSpacingToPx(style.letterSpacing, style.fontSize),
-      signature: typographySignature(style.fontName.family, style.fontSize, fontWeight),
+      signature: typographySignature(style.fontName.family, style.fontSize, fontWeight, style.fontName.style),
       remote: style.remote
     };
   }
@@ -670,22 +732,22 @@
     }
     return best;
   }
-  function typographyNameFromTemplate(template, fontStyle, fontWeight) {
+  function typographyNameFromTemplate(template, fontStyle) {
     const segments = [...template.prefixSegments, ...template.roleSegments];
-    if (template.weightIndex !== null) segments.push(weightLabel(fontStyle, fontWeight));
+    if (template.weightIndex !== null) segments.push(weightLabel(fontStyle));
     return segments.join("/");
   }
   function suggestTypographyName(audit, fontFamily, fontSize, fontWeight, fontStyle, families) {
     const fallback = defaultTypographyName(fontSize, fontWeight, fontStyle, families, fontFamily);
     const sameSizeTemplate = nearestSameSizeTypographyTemplate(audit, fontFamily, fontSize, fontWeight);
-    if (sameSizeTemplate) return typographyNameFromTemplate(sameSizeTemplate, fontStyle, fontWeight);
+    if (sameSizeTemplate) return typographyNameFromTemplate(sameSizeTemplate, fontStyle);
     const template = nearestTypographyTemplate(audit, fontFamily, fontSize, fontWeight);
     if (!template) return fallback;
     const desiredRole = roleToStyleName(classifyStyle(fontSize, fontWeight));
     const desiredRoleFamily = roleFamily(desiredRole);
     const roleSegments = template.roleFamily === desiredRoleFamily ? template.roleSegments : [desiredRole];
     const adaptedTemplate = __spreadProps(__spreadValues({}, template), { roleSegments });
-    return typographyNameFromTemplate(adaptedTemplate, fontStyle, fontWeight);
+    return typographyNameFromTemplate(adaptedTemplate, fontStyle);
   }
   function formatSizeName(fontSize) {
     return Number.isInteger(fontSize) ? String(fontSize) : String(round2(fontSize));
@@ -726,7 +788,7 @@
       if (uniqueSignatures.size < 2) continue;
       for (const candidate of group) {
         if (candidate.nameOverride) continue;
-        const disambiguatedName = `${candidate.targetName}/${weightLabel(candidate.fontStyle, candidate.fontWeight)}`;
+        const disambiguatedName = `${candidate.targetName}/${weightLabel(candidate.fontStyle)}`;
         candidate.suggestedName = disambiguatedName;
         candidate.targetName = disambiguatedName;
       }
@@ -873,8 +935,7 @@
     }
     return [...byValue.entries()].map(([value, properties]) => ({ value, properties }));
   }
-  function collectSelectionCandidates(audit) {
-    const selection = figma.currentPage.selection.filter((n) => "type" in n);
+  function collectSelectionCandidates(audit, selection) {
     const colors = /* @__PURE__ */ new Map();
     const typography = /* @__PURE__ */ new Map();
     const radius = /* @__PURE__ */ new Map();
@@ -937,74 +998,46 @@
         colors.set(key, classifyCandidate(candidate, audit, key));
       }
     }
+    function collectPaintProperty(node, property, paints) {
+      const visiblePaints = paints.filter((paint) => paint.visible !== false);
+      const gradientIndex = visibleGradientIndex(paints);
+      if (gradientIndex >= 0) {
+        const gradient = paints[gradientIndex];
+        if (isGradientPaint(gradient)) addGradientRef(paints, gradient, node, property, gradientIndex);
+        return;
+      }
+      visiblePaints.forEach((paint) => {
+        var _a;
+        if (paint.type !== "SOLID") return;
+        const paintIndex = paints.indexOf(paint);
+        const value = __spreadProps(__spreadValues({}, paint.color), { a: (_a = paint.opacity) != null ? _a : 1 });
+        const key = colorKey(value);
+        const existing = colors.get(key);
+        const ref = { group: "colors", nodeId: node.id, property, paintIndex, key };
+        if (existing) existing.refs.push(ref);
+        else {
+          const suggestedName = suggestColorName(audit, value);
+          const candidate = {
+            id: `color:${key}`,
+            group: "colors",
+            kind: "solid",
+            status: "new",
+            suggestedName,
+            targetName: suggestedName,
+            selected: true,
+            value,
+            valueKey: key,
+            hex: hexColor(value),
+            refs: [ref]
+          };
+          colors.set(key, classifyCandidate(candidate, audit, value));
+        }
+      });
+    }
     function collect(node) {
       var _a;
-      if ("fills" in node && Array.isArray(node.fills)) {
-        node.fills.forEach((paint, paintIndex) => {
-          var _a2;
-          if (paint.visible === false) return;
-          if (isGradientPaint(paint)) {
-            addGradientRef(node.fills, paint, node, "fills", paintIndex);
-            return;
-          }
-          if (paint.type !== "SOLID") return;
-          const value = __spreadProps(__spreadValues({}, paint.color), { a: (_a2 = paint.opacity) != null ? _a2 : 1 });
-          const key = colorKey(value);
-          const existing = colors.get(key);
-          const ref = { group: "colors", nodeId: node.id, property: "fills", paintIndex, key };
-          if (existing) existing.refs.push(ref);
-          else {
-            const suggestedName = suggestColorName(audit, value);
-            const candidate = {
-              id: `color:${key}`,
-              group: "colors",
-              kind: "solid",
-              status: "new",
-              suggestedName,
-              targetName: suggestedName,
-              selected: true,
-              value,
-              valueKey: key,
-              hex: hexColor(value),
-              refs: [ref]
-            };
-            colors.set(key, classifyCandidate(candidate, audit, value));
-          }
-        });
-      }
-      if ("strokes" in node && Array.isArray(node.strokes)) {
-        node.strokes.forEach((paint, paintIndex) => {
-          var _a2;
-          if (paint.visible === false) return;
-          if (isGradientPaint(paint)) {
-            addGradientRef(node.strokes, paint, node, "strokes", paintIndex);
-            return;
-          }
-          if (paint.type !== "SOLID") return;
-          const value = __spreadProps(__spreadValues({}, paint.color), { a: (_a2 = paint.opacity) != null ? _a2 : 1 });
-          const key = colorKey(value);
-          const existing = colors.get(key);
-          const ref = { group: "colors", nodeId: node.id, property: "strokes", paintIndex, key };
-          if (existing) existing.refs.push(ref);
-          else {
-            const suggestedName = suggestColorName(audit, value);
-            const candidate = {
-              id: `color:${key}`,
-              group: "colors",
-              kind: "solid",
-              status: "new",
-              suggestedName,
-              targetName: suggestedName,
-              selected: true,
-              value,
-              valueKey: key,
-              hex: hexColor(value),
-              refs: [ref]
-            };
-            colors.set(key, classifyCandidate(candidate, audit, value));
-          }
-        });
-      }
+      if ("fills" in node && Array.isArray(node.fills)) collectPaintProperty(node, "fills", node.fills);
+      if ("strokes" in node && Array.isArray(node.strokes)) collectPaintProperty(node, "strokes", node.strokes);
       if (node.type === "TEXT" && node.fontName !== figma.mixed && typeof node.fontSize === "number") {
         const fontName = node.fontName;
         let lineHeightPx = null;
@@ -1017,7 +1050,7 @@
         }
         const fontWeight = styleToNumericWeight(fontName.style);
         const roleWeight = `${roleToStyleName(classifyStyle(node.fontSize, fontWeight))}/${fontName.style}`;
-        const key = typographySignature(fontName.family, node.fontSize, fontWeight);
+        const key = typographySignature(fontName.family, node.fontSize, fontWeight, fontName.style);
         const existing = typography.get(key);
         const ref = { group: "typography", nodeId: node.id, key };
         if (existing) existing.refs.push(ref);
@@ -1049,10 +1082,13 @@
     return sortCandidateGroups(validateDuplicates({ colors: [...colors.values()], typography: [...typography.values()], radius: [...radius.values()] }, audit));
   }
   async function buildProposal() {
-    const audit = currentAudit != null ? currentAudit : await auditLibraries();
+    const selection = currentSelection();
+    const selectedIds = selectionIds(selection);
+    const audit = await auditLibraries();
+    if (!sameOrderedIds(selectedIds, selectionIds())) throw new Error("\u68C0\u6D4B\u671F\u95F4\u9009\u533A\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u63D0\u53D6\u5019\u9009");
     currentAudit = audit;
-    const groups = collectSelectionCandidates(audit);
-    return { audit: audit.summary, groups, summaries: summarizeProposal(groups) };
+    const groups = collectSelectionCandidates(audit, selection);
+    return { audit: audit.summary, selectionIds: selectedIds, groups, summaries: summarizeProposal(groups) };
   }
   function postState(extra) {
     var _a;
@@ -1088,54 +1124,113 @@
       return __spreadProps(__spreadValues({}, c), { selected });
     });
   }
+  function candidateClassificationValue(candidate) {
+    if (candidate.group === "colors") return candidate.kind === "gradient" ? candidate.valueKey : candidate.value;
+    if (candidate.group === "radius") return candidate.value;
+    return candidate.targetName;
+  }
+  function reclassifyGroup(group, audit) {
+    if (!currentProposal) return;
+    const candidates = currentProposal.groups[group].map((candidate) => {
+      if (candidate.status === "applied" || candidate.status === "skip") return candidate;
+      const reset = __spreadProps(__spreadValues({}, candidate), { status: "new", reason: void 0 });
+      if (reset.group === "typography") {
+        delete reset.matchedStyleId;
+        delete reset.matchedStyleRemote;
+      }
+      return classifyCandidate(reset, audit, candidateClassificationValue(reset));
+    });
+    const groups = validateDuplicates(__spreadProps(__spreadValues({}, currentProposal.groups), { [group]: candidates }), audit);
+    currentProposal.groups = sortCandidateGroups(groups);
+    currentProposal.audit = audit.summary;
+    currentProposal.summaries = summarizeProposal(currentProposal.groups);
+  }
   function getOrCreateCollection(name) {
     const existing = currentAudit == null ? void 0 : currentAudit.localCollections.find((c) => c.name === name);
-    return existing != null ? existing : figma.variables.createVariableCollection(name);
+    if (existing) return existing;
+    const collection = figma.variables.createVariableCollection(name);
+    currentAudit == null ? void 0 : currentAudit.localCollections.push(collection);
+    return collection;
   }
   function getNode(id) {
     const node = figma.getNodeById(id);
     return node && "type" in node ? node : null;
   }
-  function upsertVariable(name, value, type, collection) {
+  function createOrReuseVariable(name, value, type, collection) {
     const existing = currentAudit == null ? void 0 : currentAudit.localVariables.find((v) => v.variableCollectionId === collection.id && v.name === name);
     if (existing) {
       if (existing.resolvedType !== type) return null;
-      try {
-        existing.setValueForMode(collection.defaultModeId, value);
-        return existing;
-      } catch (e) {
-        return null;
-      }
+      const existingValue = existing.valuesByMode[collection.defaultModeId];
+      return valuesEqual(existingValue, value) ? existing : null;
     }
+    let created = null;
     try {
       const v = figma.variables.createVariable(name, collection, type);
+      created = v;
       v.setValueForMode(collection.defaultModeId, value);
+      currentAudit == null ? void 0 : currentAudit.localVariables.push(v);
       return v;
     } catch (e) {
+      if (created) {
+        try {
+          created.remove();
+        } catch (e2) {
+        }
+      }
       return null;
     }
   }
+  function makeOutcome(expectedBindings = 0) {
+    return { resourceReady: false, expectedBindings, boundBindings: 0, errors: [] };
+  }
+  function addOutcomeError(outcome, message) {
+    if (!outcome.errors.includes(message)) outcome.errors.push(message);
+  }
   async function applyColors(candidates) {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     let collection = null;
     const byKey = /* @__PURE__ */ new Map();
     const paintStyleIdsByKey = /* @__PURE__ */ new Map();
+    const outcomes = /* @__PURE__ */ new Map();
     for (const c of candidates) {
+      const uniqueRefs = new Set(c.refs.map((ref) => ref.group === "colors" ? `${ref.nodeId}:${ref.property}:${c.kind === "gradient" ? "style" : ref.paintIndex}` : ""));
+      const outcome = makeOutcome(uniqueRefs.size);
+      outcomes.set(c.id, outcome);
       if (c.kind === "gradient") {
         let styleId = (_a = currentAudit == null ? void 0 : currentAudit.paintStyleIdsByKey.get(c.valueKey)) != null ? _a : null;
         if (c.status === "new") {
-          const style = figma.createPaintStyle();
-          style.name = c.targetName;
-          style.paints = clonePaints(c.paints);
-          styleId = style.id;
+          if (currentAudit == null ? void 0 : currentAudit.localPaintStyles.some((style) => style.name === c.targetName)) {
+            addOutcomeError(outcome, "\u63D0\u4EA4\u65F6\u53D1\u73B0\u540C\u540D\u989C\u8272\u6837\u5F0F");
+          } else {
+            let createdStyle = null;
+            try {
+              const style = figma.createPaintStyle();
+              createdStyle = style;
+              style.name = c.targetName;
+              style.paints = clonePaints(c.paints);
+              currentAudit == null ? void 0 : currentAudit.localPaintStyles.push(style);
+              styleId = style.id;
+            } catch (e) {
+              if (createdStyle) {
+                try {
+                  createdStyle.remove();
+                } catch (e2) {
+                }
+              }
+              addOutcomeError(outcome, "\u6E10\u53D8\u6837\u5F0F\u521B\u5EFA\u5931\u8D25");
+            }
+          }
         }
-        if (styleId) paintStyleIdsByKey.set(c.valueKey, styleId);
+        if (styleId) {
+          paintStyleIdsByKey.set(c.valueKey, styleId);
+          outcome.resourceReady = true;
+        } else if (outcome.errors.length === 0) addOutcomeError(outcome, "\u6CA1\u6709\u53EF\u7528\u7684\u6E10\u53D8\u6837\u5F0F");
         continue;
       }
       let v = null;
       if (c.status === "new") {
         collection = collection != null ? collection : getOrCreateCollection((_b = currentAudit == null ? void 0 : currentAudit.summary.colorCollectionName) != null ? _b : COLOR_COLLECTION);
-        v = upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, "COLOR", collection);
+        v = createOrReuseVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, "COLOR", collection);
       } else {
         v = (_c = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "COLOR")) != null ? _c : null;
         if (!v) {
@@ -1143,28 +1238,45 @@
           if (id) v = await figma.variables.getVariableByIdAsync(id);
         }
       }
-      if (v) byKey.set(c.valueKey, v);
+      if (v) {
+        byKey.set(c.valueKey, v);
+        outcome.resourceReady = true;
+      } else addOutcomeError(outcome, "\u989C\u8272\u53D8\u91CF\u4E0D\u5B58\u5728\u6216\u53D1\u751F\u540C\u540D\u51B2\u7A81");
     }
     for (const c of candidates) {
+      const outcome = outcomes.get(c.id);
+      if (!outcome.resourceReady) continue;
+      const processed = /* @__PURE__ */ new Set();
       if (c.kind === "gradient") {
         const styleId = paintStyleIdsByKey.get(c.valueKey);
         if (!styleId) continue;
         for (const ref of c.refs) {
           if (ref.group !== "colors") continue;
+          const refKey = `${ref.nodeId}:${ref.property}`;
+          if (processed.has(refKey)) continue;
+          processed.add(refKey);
           const node = getNode(ref.nodeId);
-          if (!node) continue;
+          if (!node) {
+            addOutcomeError(outcome, "\u5F85\u7ED1\u5B9A\u56FE\u5C42\u5DF2\u4E0D\u5B58\u5728");
+            continue;
+          }
           try {
             if (ref.property === "fills" && "fillStyleId" in node) {
+              if (!Array.isArray(node.fills) || paintListKey(node.fills) !== c.valueKey) throw new Error("fills \u5DF2\u53D8\u5316");
               const fillNode = node;
               if (fillNode.setFillStyleIdAsync) await fillNode.setFillStyleIdAsync(styleId);
               else fillNode.fillStyleId = styleId;
+              outcome.boundBindings++;
             }
             if (ref.property === "strokes" && "strokeStyleId" in node) {
+              if (!Array.isArray(node.strokes) || paintListKey(node.strokes) !== c.valueKey) throw new Error("strokes \u5DF2\u53D8\u5316");
               const strokeNode = node;
               if (strokeNode.setStrokeStyleIdAsync) await strokeNode.setStrokeStyleIdAsync(styleId);
               else strokeNode.strokeStyleId = styleId;
+              outcome.boundBindings++;
             }
           } catch (e) {
+            addOutcomeError(outcome, "\u56FE\u5C42\u989C\u8272\u5DF2\u53D8\u5316\u6216\u6837\u5F0F\u7ED1\u5B9A\u5931\u8D25");
           }
         }
         continue;
@@ -1173,104 +1285,229 @@
       if (!v) continue;
       for (const ref of c.refs) {
         if (ref.group !== "colors") continue;
+        const refKey = `${ref.nodeId}:${ref.property}:${ref.paintIndex}`;
+        if (processed.has(refKey)) continue;
+        processed.add(refKey);
         const node = getNode(ref.nodeId);
-        if (!node || !(ref.property in node)) continue;
+        if (!node || !(ref.property in node)) {
+          addOutcomeError(outcome, "\u5F85\u7ED1\u5B9A\u56FE\u5C42\u5DF2\u4E0D\u5B58\u5728");
+          continue;
+        }
         const paints = ref.property === "fills" && "fills" in node ? node.fills : ref.property === "strokes" && "strokes" in node ? node.strokes : [];
         const nextPaints = paints.slice();
         const paint = paints[ref.paintIndex];
-        if (!paint || paint.type !== "SOLID") continue;
+        if (!paint || paint.type !== "SOLID" || colorKey(__spreadProps(__spreadValues({}, paint.color), { a: (_d = paint.opacity) != null ? _d : 1 })) !== c.valueKey) {
+          addOutcomeError(outcome, "\u56FE\u5C42\u989C\u8272\u5DF2\u53D8\u5316\uFF0C\u5DF2\u8DF3\u8FC7\u7ED1\u5B9A");
+          continue;
+        }
         nextPaints[ref.paintIndex] = figma.variables.setBoundVariableForPaint(paint, "color", v);
         try {
           if (ref.property === "fills" && "fills" in node) node.fills = nextPaints;
           if (ref.property === "strokes" && "strokes" in node) node.strokes = nextPaints;
+          outcome.boundBindings++;
         } catch (e) {
+          addOutcomeError(outcome, "\u989C\u8272\u53D8\u91CF\u7ED1\u5B9A\u5931\u8D25");
         }
       }
     }
-    return byKey.size;
+    return outcomes;
   }
   async function applyTypography(candidates) {
-    var _a, _b;
-    const collection = getOrCreateCollection((_a = currentAudit == null ? void 0 : currentAudit.summary.typographyCollectionName) != null ? _a : TYPOGRAPHY_COLLECTION);
+    var _a, _b, _c, _d;
+    let collection = null;
     const existingStyles = await figma.getLocalTextStylesAsync();
     const byKey = /* @__PURE__ */ new Map();
+    const outcomes = /* @__PURE__ */ new Map();
     for (const c of candidates) {
+      const outcome = makeOutcome(new Set(c.refs.map((ref) => ref.nodeId)).size);
+      outcomes.set(c.id, outcome);
       if (c.status === "match") {
         let matched = null;
         if (c.matchedStyleId) {
           try {
-            const style2 = await figma.getStyleByIdAsync(c.matchedStyleId);
-            if ((style2 == null ? void 0 : style2.type) === "TEXT") matched = style2;
+            const style = await figma.getStyleByIdAsync(c.matchedStyleId);
+            if ((style == null ? void 0 : style.type) === "TEXT") matched = style;
           } catch (e) {
             matched = null;
           }
         }
-        if (!matched) matched = (_b = existingStyles.find((s) => s.name === c.targetName)) != null ? _b : null;
-        if (matched) byKey.set(c.valueKey, matched);
+        if (!matched) matched = (_a = existingStyles.find((s) => s.name === c.targetName)) != null ? _a : null;
+        if (matched) {
+          byKey.set(c.valueKey, matched);
+          outcome.resourceReady = true;
+        } else addOutcomeError(outcome, "\u5339\u914D\u7684\u6587\u5B57\u6837\u5F0F\u5DF2\u4E0D\u53EF\u7528");
         continue;
       }
-      upsertVariable(`${c.targetName}/font-size`, c.fontSize, "FLOAT", collection);
-      upsertVariable(`${c.targetName}/font-weight`, c.fontWeight, "FLOAT", collection);
-      upsertVariable(`${c.targetName}/font-family`, c.fontFamily, "STRING", collection);
-      if (c.lineHeightPx === null || c.lineHeightPx === 0) upsertVariable(`${c.targetName}/line-height`, "auto", "STRING", collection);
-      else upsertVariable(`${c.targetName}/line-height`, c.lineHeightPx, "FLOAT", collection);
-      upsertVariable(`${c.targetName}/letter-spacing`, c.letterSpacingPx, "FLOAT", collection);
-      let style = existingStyles.find((s) => s.name === c.targetName);
+      if (existingStyles.some((style) => style.name === c.targetName)) {
+        addOutcomeError(outcome, "\u63D0\u4EA4\u65F6\u53D1\u73B0\u540C\u540D\u6587\u5B57\u6837\u5F0F");
+        continue;
+      }
+      let createdStyle = null;
+      const createdVariables = [];
+      let createdCollection = null;
       try {
         await figma.loadFontAsync({ family: c.fontFamily, style: c.fontStyle });
-        if (!style) {
-          style = figma.createTextStyle();
-          style.name = c.targetName;
+        const latestStyles = await figma.getLocalTextStylesAsync();
+        if (latestStyles.some((style2) => style2.name === c.targetName)) {
+          addOutcomeError(outcome, "\u5B57\u4F53\u52A0\u8F7D\u671F\u95F4\u51FA\u73B0\u540C\u540D\u6587\u5B57\u6837\u5F0F");
+          continue;
         }
+        const style = figma.createTextStyle();
+        createdStyle = style;
+        style.name = c.targetName;
         style.fontName = { family: c.fontFamily, style: c.fontStyle };
         style.fontSize = c.fontSize;
         style.lineHeight = c.lineHeightPx === null || c.lineHeightPx === 0 ? { unit: "AUTO" } : { unit: "PIXELS", value: c.lineHeightPx };
         style.letterSpacing = { unit: "PIXELS", value: c.letterSpacingPx };
+        currentAudit == null ? void 0 : currentAudit.localTextStyles.push(style);
+        if (!collection) {
+          const collectionName = (_b = currentAudit == null ? void 0 : currentAudit.summary.typographyCollectionName) != null ? _b : TYPOGRAPHY_COLLECTION;
+          const existingCollection = (_c = currentAudit == null ? void 0 : currentAudit.localCollections.find((item) => item.name === collectionName)) != null ? _c : null;
+          collection = getOrCreateCollection(collectionName);
+          if (!existingCollection) createdCollection = collection;
+        }
+        const variables = [
+          [`${c.targetName}/font-size`, c.fontSize, "FLOAT"],
+          [`${c.targetName}/font-weight`, c.fontWeight, "FLOAT"],
+          [`${c.targetName}/font-family`, c.fontFamily, "STRING"],
+          [`${c.targetName}/line-height`, c.lineHeightPx === null || c.lineHeightPx === 0 ? "auto" : c.lineHeightPx, c.lineHeightPx === null || c.lineHeightPx === 0 ? "STRING" : "FLOAT"],
+          [`${c.targetName}/letter-spacing`, c.letterSpacingPx, "FLOAT"]
+        ];
+        for (const [name, value, type] of variables) {
+          const existingVariable = (_d = currentAudit == null ? void 0 : currentAudit.localVariables.find((variable2) => variable2.variableCollectionId === collection.id && variable2.name === name)) != null ? _d : null;
+          const variable = createOrReuseVariable(name, value, type, collection);
+          if (!variable) throw new Error(`\u53D8\u91CF ${name} \u521B\u5EFA\u5931\u8D25\u6216\u540C\u540D\u51B2\u7A81`);
+          if (!existingVariable) createdVariables.push(variable);
+        }
+        outcome.resourceReady = true;
         byKey.set(c.valueKey, style);
-      } catch (e) {
+      } catch (error) {
+        for (const variable of createdVariables) {
+          try {
+            variable.remove();
+          } catch (e) {
+          }
+        }
+        if (createdVariables.length > 0 && currentAudit) {
+          const createdIds = new Set(createdVariables.map((variable) => variable.id));
+          currentAudit.localVariables = currentAudit.localVariables.filter((variable) => !createdIds.has(variable.id));
+        }
+        if (createdStyle) {
+          try {
+            createdStyle.remove();
+          } catch (e) {
+          }
+          if (currentAudit) currentAudit.localTextStyles = currentAudit.localTextStyles.filter((style) => style.id !== (createdStyle == null ? void 0 : createdStyle.id));
+        }
+        if (createdCollection) {
+          try {
+            createdCollection.remove();
+          } catch (e) {
+          }
+          if (currentAudit) currentAudit.localCollections = currentAudit.localCollections.filter((item) => item.id !== (createdCollection == null ? void 0 : createdCollection.id));
+          collection = null;
+        }
+        outcome.resourceReady = false;
+        addOutcomeError(outcome, error instanceof Error ? error.message : "\u5B57\u4F53\u4E0D\u53EF\u7528\u6216\u6587\u5B57\u6837\u5F0F\u521B\u5EFA\u5931\u8D25");
       }
     }
     for (const c of candidates) {
+      const outcome = outcomes.get(c.id);
       const style = byKey.get(c.valueKey);
       if (!style) continue;
+      const processed = /* @__PURE__ */ new Set();
       for (const ref of c.refs) {
         if (ref.group !== "typography") continue;
+        if (processed.has(ref.nodeId)) continue;
+        processed.add(ref.nodeId);
         const node = getNode(ref.nodeId);
-        if ((node == null ? void 0 : node.type) !== "TEXT") continue;
+        if ((node == null ? void 0 : node.type) !== "TEXT" || node.fontName === figma.mixed || typeof node.fontSize !== "number") {
+          addOutcomeError(outcome, "\u5F85\u7ED1\u5B9A\u6587\u5B57\u56FE\u5C42\u5DF2\u4E0D\u5B58\u5728\u6216\u5C5E\u6027\u5DF2\u6DF7\u5408");
+          continue;
+        }
+        const currentWeight = styleToNumericWeight(node.fontName.style);
+        if (typographySignature(node.fontName.family, node.fontSize, currentWeight, node.fontName.style) !== c.valueKey) {
+          addOutcomeError(outcome, "\u6587\u5B57\u5C5E\u6027\u5DF2\u53D8\u5316\uFF0C\u5DF2\u8DF3\u8FC7\u7ED1\u5B9A");
+          continue;
+        }
         try {
           await node.setTextStyleIdAsync(style.id);
+          outcome.boundBindings++;
         } catch (e) {
+          addOutcomeError(outcome, "\u6587\u5B57\u6837\u5F0F\u7ED1\u5B9A\u5931\u8D25");
         }
       }
     }
-    return byKey.size;
+    return outcomes;
   }
-  async function applyRadius(candidates) {
+  async function applyRadius(candidates, selectedNodes) {
     var _a, _b;
-    const collection = getOrCreateCollection((_a = currentAudit == null ? void 0 : currentAudit.summary.radiusCollectionName) != null ? _a : RADIUS_COLLECTION);
+    let collection = null;
     const byKey = /* @__PURE__ */ new Map();
+    const outcomes = /* @__PURE__ */ new Map();
     for (const c of candidates) {
-      const v = c.status === "new" ? upsertVariable(c.targetName, c.value, "FLOAT", collection) : (_b = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "FLOAT")) != null ? _b : null;
-      if (v) byKey.set(c.valueKey, v);
+      const outcome = makeOutcome();
+      outcomes.set(c.id, outcome);
+      if (c.status === "new") collection = collection != null ? collection : getOrCreateCollection((_a = currentAudit == null ? void 0 : currentAudit.summary.radiusCollectionName) != null ? _a : RADIUS_COLLECTION);
+      const v = c.status === "new" ? createOrReuseVariable(c.targetName, c.value, "FLOAT", collection) : (_b = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "FLOAT")) != null ? _b : null;
+      if (v) {
+        byKey.set(c.valueKey, v);
+        outcome.resourceReady = true;
+      } else addOutcomeError(outcome, "\u5706\u89D2\u53D8\u91CF\u4E0D\u5B58\u5728\u6216\u53D1\u751F\u540C\u540D\u51B2\u7A81");
     }
-    const selectedNodes = figma.currentPage.selection.filter((n) => "type" in n);
     for (const node of selectedNodes) {
       for (const item of radiusPropertiesForNode(node)) {
         const v = byKey.get(String(item.value));
         if (!v) continue;
+        const candidate = candidates.find((c) => c.valueKey === String(item.value));
+        if (!candidate) continue;
+        const outcome = outcomes.get(candidate.id);
         for (const property of item.properties) {
+          outcome.expectedBindings++;
           try {
             node.setBoundVariable(property, v);
+            outcome.boundBindings++;
           } catch (e) {
+            addOutcomeError(outcome, "\u5706\u89D2\u53D8\u91CF\u7ED1\u5B9A\u5931\u8D25");
           }
         }
       }
     }
-    return byKey.size;
+    return outcomes;
   }
   async function applyGroup(group) {
     if (!currentProposal) return;
-    const candidates = currentProposal.groups[group].filter((c) => {
+    if (!proposalSelectionIsCurrent(currentProposal)) {
+      currentProposal = null;
+      figma.notify("\u9009\u533A\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u63D0\u53D6\u5019\u9009", { error: true });
+      return;
+    }
+    const intended = currentProposal.groups[group].filter((c) => c.status === "match" || c.status === "new" && c.selected !== false);
+    const intendedState = new Map(intended.map((candidate) => [candidate.id, `${candidate.status}:${candidate.targetName}`]));
+    const freshAudit = await auditLibraries();
+    if (!currentProposal || !proposalSelectionIsCurrent(currentProposal)) {
+      currentProposal = null;
+      figma.notify("\u68C0\u67E5\u671F\u95F4\u9009\u533A\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u63D0\u53D6\u5019\u9009", { error: true });
+      return;
+    }
+    currentAudit = freshAudit;
+    reclassifyGroup(group, freshAudit);
+    const libraryChanged = intended.some((candidate) => {
+      const refreshed = currentProposal == null ? void 0 : currentProposal.groups[group].find((item) => item.id === candidate.id);
+      return !refreshed || intendedState.get(candidate.id) !== `${refreshed.status}:${refreshed.targetName}`;
+    });
+    if (libraryChanged) {
+      figma.notify("\u8BBE\u8BA1\u5E93\u72B6\u6001\u5DF2\u53D8\u5316\uFF0C\u8BF7\u5BA1\u6838\u66F4\u65B0\u540E\u7684\u5019\u9009\u540E\u518D\u63D0\u4EA4", { error: true });
+      return;
+    }
+    const proposal = currentProposal;
+    const selectedNodes = currentSelection();
+    if (!proposal || !sameOrderedIds(proposal.selectionIds, selectionIds(selectedNodes))) {
+      currentProposal = null;
+      figma.notify("\u63D0\u4EA4\u524D\u9009\u533A\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u63D0\u53D6\u5019\u9009", { error: true });
+      return;
+    }
+    const candidates = proposal.groups[group].filter((c) => {
       if (c.status === "match") return true;
       return c.status === "new" && c.selected !== false;
     });
@@ -1278,14 +1515,29 @@
       figma.notify("\u6CA1\u6709\u53EF\u6DFB\u52A0\u6216\u7ED1\u5B9A\u7684 token");
       return;
     }
-    let applied = 0;
-    if (group === "colors") applied = await applyColors(candidates);
-    if (group === "typography") applied = await applyTypography(candidates);
-    if (group === "radius") applied = await applyRadius(candidates);
-    currentProposal.groups[group] = currentProposal.groups[group].map((c) => candidates.some((a) => a.id === c.id) ? __spreadProps(__spreadValues({}, c), { status: "applied", reason: c.status === "match" ? "\u5DF2\u590D\u7528\u672C\u5730\u5339\u914D\u9879\u5E76\u7ED1\u5B9A" : "\u5DF2\u6DFB\u52A0\u5E76\u7ED1\u5B9A" }) : c);
-    currentProposal.summaries = summarizeProposal(currentProposal.groups);
+    let outcomes = /* @__PURE__ */ new Map();
+    if (group === "colors") outcomes = await applyColors(candidates);
+    if (group === "typography") outcomes = await applyTypography(candidates);
+    if (group === "radius") outcomes = await applyRadius(candidates, selectedNodes);
+    let completed = 0;
+    proposal.groups[group] = proposal.groups[group].map((candidate) => {
+      const outcome = outcomes.get(candidate.id);
+      if (!outcome) return candidate;
+      if (isCompleteOutcome(outcome)) {
+        completed++;
+        return __spreadProps(__spreadValues({}, candidate), {
+          status: "applied",
+          reason: candidate.status === "match" ? "\u5DF2\u590D\u7528\u5339\u914D\u9879\u5E76\u5B8C\u6210\u7ED1\u5B9A" : "\u5DF2\u6DFB\u52A0\u5E76\u5B8C\u6210\u7ED1\u5B9A"
+        });
+      }
+      const bindingDetail = outcome.expectedBindings > 0 ? `\u7ED1\u5B9A ${outcome.boundBindings}/${outcome.expectedBindings}` : "\u65E0\u9700\u7ED1\u5B9A\u5F53\u524D\u56FE\u5C42";
+      const errorDetail = outcome.errors.length ? outcome.errors.join("\uFF1B") : "\u63D0\u4EA4\u672A\u5B8C\u6210";
+      return __spreadProps(__spreadValues({}, candidate), { reason: `${bindingDetail}\uFF1B${errorDetail}` });
+    });
+    proposal.summaries = summarizeProposal(proposal.groups);
     currentAudit = await auditLibraries();
-    figma.notify(`\u5DF2\u6DFB\u52A0 ${applied} \u4E2A ${group} token \u5E76\u5C1D\u8BD5\u7ED1\u5B9A`);
+    const failed = candidates.length - completed;
+    figma.notify(failed > 0 ? `${group}\uFF1A\u5B8C\u6210 ${completed} \u4E2A\uFF0C\u672A\u5B8C\u6210 ${failed} \u4E2A` : `${group}\uFF1A\u5DF2\u5B8C\u6210 ${completed} \u4E2A token`, failed > 0 ? { error: true } : void 0);
   }
   async function buildExportPayload() {
     const allVars = await figma.variables.getLocalVariablesAsync();
@@ -1340,7 +1592,13 @@
   }
   figma.root.setRelaunchData({ [TOOL_ID]: DISPLAY_NAME });
   figma.showUI(__html__, { width: 420, height: 640 });
-  figma.on("selectionchange", () => postState());
+  figma.on("selectionchange", () => {
+    if (currentProposal && !proposalSelectionIsCurrent(currentProposal)) {
+      currentProposal = null;
+      figma.notify("\u9009\u533A\u5DF2\u53D8\u5316\uFF0C\u8BF7\u91CD\u65B0\u63D0\u53D6\u5019\u9009");
+    }
+    postState();
+  });
   postState();
   figma.ui.onmessage = (msg) => {
     void (async () => {

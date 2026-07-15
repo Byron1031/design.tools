@@ -15,5 +15,6 @@ The bundled `code.js` is committed so the plugin can be imported directly.
 ```bash
 npm install
 npm run check
+npm test
 npm run build
 ```
