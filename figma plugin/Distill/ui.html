@@ -271,7 +271,7 @@
       return `${(summary.new || 0) + (summary.match || 0)}/${(summary.conflict || 0) + (summary.invalid || 0)}`
     }
     function describeCandidate(item) {
-      if (item.group === 'colors' && item.kind === 'gradient') return `${item.gradientType} gradient · ${item.stopCount || 0} stops · ${item.refs.length} 处引用`
+      if (item.group === 'colors' && item.kind === 'gradient') return `gradient · ${item.stopCount || 0} stops · ${item.refs.length} 处引用`
       if (item.group === 'colors') return `${item.hex} · ${item.refs.length} 处引用`
       if (item.group === 'typography') return `${item.fontFamily} ${item.fontSize}px ${item.fontStyle} · ${item.refs.length} 处引用`
       return `${item.value}px · ${item.refs.length} 处引用`

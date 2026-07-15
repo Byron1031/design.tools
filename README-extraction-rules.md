@@ -95,23 +95,24 @@ Colors 采用值优先匹配。
 
 如果是新增颜色，默认命名为：
 
-- 不透明灰色系：`gray/{hex}`
+- 不透明灰色系：`gray/{brightnessPercent}`
 - 其他不透明颜色：`color/{hex}`
 - 黑色透明度：`black-alpha/{alphaPercent}`
 - 白色透明度：`white-alpha/{alphaPercent}`
 - 其他透明色：`alpha/{hex}/{alphaPercent}`
-- 渐变色：`gradient/{type}/{firstStop}-{lastStop}/{hash}`
+- 渐变色：`gradient/{firstStop}-{lastStop}/{hash}`
 
 示例：
 
-- `#141414` -> `gray/141414`
-- `#999999` -> `gray/999999`
+- `#141414` -> `gray/8`
+- `#999999` -> `gray/60`
+- `#fafafa` -> `gray/98`
 - `#00000099` -> `black-alpha/60`
 - `#ffffff99` -> `white-alpha/60`
 - `#ebebf599` -> `alpha/ebebf5/60`
-- 线性渐变 `#ffffff -> #000000` -> `gradient/linear/ffffff-000000/{hash}`
+- 渐变 `#ffffff -> #000000` -> `gradient/ffffff-000000/{hash}`
 
-`gray` 的定义是不带任何色相，只通过明度或亮度变化形成的颜色。实现上要求颜色不透明，且 RGB 三个通道换算到 0-255 后完全相等，例如 `#000000`、`#999999`、`#ffffff`。如果 RGB 三通道不完全相等，即使视觉上接近灰色，也不会归入 `gray`。
+`gray` 的定义是不带任何色相，只通过明度或亮度变化形成的颜色。实现上要求颜色不透明，且 RGB 三个通道换算到 0-255 后完全相等，例如 `#000000`、`#999999`、`#ffffff`。如果 RGB 三通道不完全相等，即使视觉上接近灰色，也不会归入 `gray`。名称中的数字使用 HSB 中的 B 值百分比，计算方式为 `round(max(R, G, B) * 100)`。
 
 当前版本只提取选区中真实出现的颜色，不会自动补齐灰阶、白色透明度、黑色透明度色盘。
 

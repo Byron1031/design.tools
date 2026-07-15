@@ -206,6 +206,9 @@ function isOpaqueGray(c: TokenColor): boolean {
   const b = Math.round(c.b * 255)
   return r === g && g === b
 }
+function hsbBrightnessPercent(c: TokenColor): number {
+  return Math.round(Math.max(c.r, c.g, c.b) * 100)
+}
 function colorKey(c: TokenColor): string {
   return `${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${Math.round(c.a * 100)}`
 }
@@ -775,7 +778,7 @@ function suggestColorName(audit: LibraryAudit, c: TokenColor): string {
     if (hex === 'ffffff') return `white-alpha/${alpha}`
     return `alpha/${hex}/${alpha}`
   }
-  if (isOpaqueGray(c)) return `gray/${hex}`
+  if (isOpaqueGray(c)) return `gray/${hsbBrightnessPercent(c)}`
   return `${audit.colorPrefix}/${hex}`
 }
 function suggestGradientName(audit: LibraryAudit, paint: GradientPaint, key: string): string {
@@ -785,7 +788,7 @@ function suggestGradientName(audit: LibraryAudit, paint: GradientPaint, key: str
   const last = paint.gradientStops[paint.gradientStops.length - 1]
   const firstHex = first ? colorStopToHex(first).replace('#', '') : 'start'
   const lastHex = last ? colorStopToHex(last).replace('#', '') : 'end'
-  return `gradient/${gradientLabel(paint.type)}/${firstHex}-${lastHex}/${stableHash(key)}`
+  return `gradient/${firstHex}-${lastHex}/${stableHash(key)}`
 }
 function defaultTypographyName(fontSize: number, fontWeight: number, fontStyle: string, families: Set<string>, family: string): string {
   const role = roleToStyleName(classifyStyle(fontSize, fontWeight))

@@ -71,6 +71,9 @@
     const b = Math.round(c.b * 255);
     return r === g && g === b;
   }
+  function hsbBrightnessPercent(c) {
+    return Math.round(Math.max(c.r, c.g, c.b) * 100);
+  }
   function colorKey(c) {
     return `${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${Math.round(c.a * 100)}`;
   }
@@ -613,7 +616,7 @@
       if (hex === "ffffff") return `white-alpha/${alpha}`;
       return `alpha/${hex}/${alpha}`;
     }
-    if (isOpaqueGray(c)) return `gray/${hex}`;
+    if (isOpaqueGray(c)) return `gray/${hsbBrightnessPercent(c)}`;
     return `${audit.colorPrefix}/${hex}`;
   }
   function suggestGradientName(audit, paint, key) {
@@ -623,7 +626,7 @@
     const last = paint.gradientStops[paint.gradientStops.length - 1];
     const firstHex = first ? colorStopToHex(first).replace("#", "") : "start";
     const lastHex = last ? colorStopToHex(last).replace("#", "") : "end";
-    return `gradient/${gradientLabel(paint.type)}/${firstHex}-${lastHex}/${stableHash(key)}`;
+    return `gradient/${firstHex}-${lastHex}/${stableHash(key)}`;
   }
   function defaultTypographyName(fontSize, fontWeight, fontStyle, families, family) {
     const role = roleToStyleName(classifyStyle(fontSize, fontWeight));
