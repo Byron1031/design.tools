@@ -16,6 +16,7 @@
       font: 12px Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+    [hidden] { display: none !important; }
     #plugin-root { width: 420px; box-sizing: border-box; }
     .toolbar, .footer { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--border); }
     .footer { border-top: 1px solid var(--border); border-bottom: 0; justify-content: space-between; }
@@ -198,17 +199,16 @@
 <body>
   <div id="plugin-root">
     <div class="toolbar">
-      <button id="action-audit" class="secondary" type="button">检测设计库</button>
       <button id="action-preview" type="button">提取候选</button>
     </div>
     <div class="content">
       <section class="status">
-        <div class="status-title" id="status-title">等待检测</div>
-        <div class="status-meta" id="status-meta">先检测当前文件和已启用团队库，再从选中 Frame 提取候选 token。</div>
+        <div class="status-title" id="status-title">等待提取</div>
+        <div class="status-meta" id="status-meta">选中 Frame 后点击「提取候选」，插件会自动检测当前文件和已启用团队库。</div>
       </section>
       <div id="groups"></div>
     </div>
-    <div class="footer">
+    <div class="footer" hidden data-feature="export">
       <div class="export-row">
         <select id="export-format" aria-label="导出格式">
           <option value="JSON" selected>JSON</option>
@@ -271,12 +271,14 @@
       return `${(summary.new || 0) + (summary.match || 0)}/${(summary.conflict || 0) + (summary.invalid || 0)}`
     }
     function describeCandidate(item) {
+      if (item.group === 'colors' && item.kind === 'gradient') return `${item.gradientType} gradient · ${item.stopCount || 0} stops · ${item.refs.length} 处引用`
       if (item.group === 'colors') return `${item.hex} · ${item.refs.length} 处引用`
       if (item.group === 'typography') return `${item.fontFamily} ${item.fontSize}px ${item.fontStyle} · ${item.refs.length} 处引用`
       return `${item.value}px · ${item.refs.length} 处引用`
     }
     function colorSwatch(item) {
       if (item.group !== 'colors') return ''
+      if (item.kind === 'gradient') return `<span class="swatch" style="background:${escapeAttr(item.preview || 'linear-gradient(90deg, #fff, #000)')}"></span>`
       return `<span class="swatch" style="background:${item.hex}"></span>`
     }
     function escapeHtml(value) {
@@ -299,8 +301,8 @@
       const title = document.getElementById('status-title')
       const meta = document.getElementById('status-meta')
       if (!audit) {
-        title.textContent = '等待检测'
-        meta.textContent = latestState.hasSelection ? '已选中 Frame。点击「检测设计库」后再提取候选。' : '请先选中至少一个 Frame。'
+        title.textContent = '等待提取'
+        meta.textContent = latestState.hasSelection ? '已选中 Frame。点击「提取候选」会自动检测设计库并生成候选。' : '请先选中至少一个 Frame。'
         return
       }
       const hasLibrary = audit.hasLocalLibrary || audit.hasRemoteLibrary
@@ -312,6 +314,7 @@
         <div class="library-column">
           <div class="library-heading">本地组件库</div>
           <div class="library-row">本地颜色变量 ${audit.localColorVariables || 0}</div>
+          <div class="library-row">本地颜色样式 ${audit.localPaintStyles || 0}</div>
           <div class="library-row">本地文字变量 ${audit.localTypographyVariables || 0}</div>
           <div class="library-row">本地组件/实例 ${audit.localComponents || 0}</div>
         </div>
@@ -395,26 +398,25 @@
       })
     }
     function render() {
-      const auditButton = document.getElementById('action-audit')
       const previewButton = document.getElementById('action-preview')
       const exportButton = document.getElementById('action-export')
-      auditButton.disabled = latestState.isExecuting
       previewButton.disabled = latestState.isExecuting || !latestState.hasSelection
-      exportButton.disabled = latestState.isExecuting
-      setButtonLoading(auditButton, latestState.activeAction === 'audit', '检测中')
+      if (exportButton) exportButton.disabled = latestState.isExecuting
       setButtonLoading(previewButton, latestState.activeAction === 'preview', '提取中')
-      setButtonLoading(exportButton, latestState.activeAction === 'export', '导出中')
+      if (exportButton) setButtonLoading(exportButton, latestState.activeAction === 'export', '导出中')
       renderStatus()
       renderGroups()
       scheduleResize()
     }
 
-    document.getElementById('action-audit').addEventListener('click', () => sendWithLoading({ type: 'audit' }, 'audit'))
     document.getElementById('action-preview').addEventListener('click', () => sendWithLoading({ type: 'extract-preview' }, 'preview'))
-    document.getElementById('action-export').addEventListener('click', () => {
-      const fmt = String(document.getElementById('export-format').value || 'JSON').toLowerCase()
-      sendWithLoading({ type: 'export', format: fmt === 'css' ? 'css' : 'json' }, 'export')
-    })
+    const exportButton = document.getElementById('action-export')
+    if (exportButton) {
+      exportButton.addEventListener('click', () => {
+        const fmt = String(document.getElementById('export-format').value || 'JSON').toLowerCase()
+        sendWithLoading({ type: 'export', format: fmt === 'css' ? 'css' : 'json' }, 'export')
+      })
+    }
     window.addEventListener('message', event => {
       const msg = event.data && event.data.pluginMessage
       if (!msg) return

@@ -19,12 +19,24 @@ type BaseCandidate = {
   selected?: boolean
   refs: BindingRef[]
 }
-type ColorCandidate = BaseCandidate & {
+type SolidColorCandidate = BaseCandidate & {
   group: 'colors'
+  kind: 'solid'
   value: TokenColor
   valueKey: string
   hex: string
 }
+type GradientColorCandidate = BaseCandidate & {
+  group: 'colors'
+  kind: 'gradient'
+  paints: Paint[]
+  valueKey: string
+  hex: string
+  gradientType: string
+  stopCount: number
+  preview: string
+}
+type ColorCandidate = SolidColorCandidate | GradientColorCandidate
 type TypographyCandidate = BaseCandidate & {
   group: 'typography'
   fontFamily: string
@@ -49,11 +61,13 @@ type AuditSummary = {
   localCollections: number
   localVariables: number
   localColorVariables: number
+  localPaintStyles: number
   localTypographyVariables: number
   localTextStyles: number
   localComponents: number
   remoteComponents: number
   remoteStyles: number
+  remotePaintStyles: number
   remoteCollections: number
   remoteVariables: number
   remoteColorVariables: number
@@ -73,6 +87,7 @@ type LibraryAudit = {
   summary: AuditSummary
   localCollections: VariableCollection[]
   localVariables: Variable[]
+  localPaintStyles: PaintStyle[]
   localTextStyles: TextStyle[]
   typographyStylesBySignature: Map<string, TypographyStyleRecord>
   typographyTemplates: TypographyNameTemplate[]
@@ -85,6 +100,8 @@ type LibraryAudit = {
   namesByGroup: Record<TokenGroup, Set<string>>
   valueNamesByGroup: Record<TokenGroup, Map<string, string>>
   colorVariableIdsByValue: Map<string, string>
+  paintStyleNamesByKey: Map<string, string>
+  paintStyleIdsByKey: Map<string, string>
   colorPrefix: string
   radiusPrefix: string
 }
@@ -182,6 +199,13 @@ function isInvalidTokenName(name: string): string | null {
 function rgbToHex(r: number, g: number, b: number): string {
   return [r, g, b].map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('')
 }
+function isOpaqueGray(c: TokenColor): boolean {
+  if (c.a < 0.999) return false
+  const r = Math.round(c.r * 255)
+  const g = Math.round(c.g * 255)
+  const b = Math.round(c.b * 255)
+  return r === g && g === b
+}
 function colorKey(c: TokenColor): string {
   return `${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${Math.round(c.a * 100)}`
 }
@@ -190,11 +214,78 @@ function hexColor(c: TokenColor): string {
   if (c.a < 0.999) return `#${hex}${Math.round(c.a * 255).toString(16).padStart(2, '0')}`
   return `#${hex}`
 }
+function colorStopToHex(stop: ColorStop): string {
+  return hexColor({ r: stop.color.r, g: stop.color.g, b: stop.color.b, a: stop.color.a })
+}
 function alphaPercent(c: TokenColor): number {
   return Math.round(c.a * 100)
 }
 function solidPaint(c: TokenColor): SolidPaint {
   return { type: 'SOLID', color: { r: c.r, g: c.g, b: c.b }, opacity: c.a }
+}
+function isGradientPaint(paint: Paint): paint is GradientPaint {
+  return paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND'
+}
+function round4(value: number): number {
+  return Math.round(value * 10000) / 10000
+}
+function stableHash(value: string): string {
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36).slice(0, 6)
+}
+function gradientLabel(type: GradientPaint['type']): string {
+  if (type === 'GRADIENT_RADIAL') return 'radial'
+  if (type === 'GRADIENT_ANGULAR') return 'angular'
+  if (type === 'GRADIENT_DIAMOND') return 'diamond'
+  return 'linear'
+}
+function clonePaints(paints: readonly Paint[]): Paint[] {
+  return paints.map(paint => JSON.parse(JSON.stringify(paint)) as Paint)
+}
+function paintKey(paint: Paint): string {
+  if (paint.type === 'SOLID') {
+    return JSON.stringify({
+      type: paint.type,
+      color: {
+        r: Math.round(paint.color.r * 255),
+        g: Math.round(paint.color.g * 255),
+        b: Math.round(paint.color.b * 255),
+      },
+      opacity: round4(paint.opacity ?? 1),
+      blendMode: paint.blendMode ?? 'NORMAL',
+      visible: paint.visible !== false,
+    })
+  }
+  if (isGradientPaint(paint)) {
+    return JSON.stringify({
+      type: paint.type,
+      opacity: round4(paint.opacity ?? 1),
+      blendMode: paint.blendMode ?? 'NORMAL',
+      visible: paint.visible !== false,
+      transform: paint.gradientTransform.map(row => row.map(round4)),
+      stops: paint.gradientStops.map(stop => ({
+        position: round4(stop.position),
+        color: {
+          r: Math.round(stop.color.r * 255),
+          g: Math.round(stop.color.g * 255),
+          b: Math.round(stop.color.b * 255),
+          a: Math.round(stop.color.a * 100),
+        },
+      })),
+    })
+  }
+  return JSON.stringify(paint)
+}
+function paintListKey(paints: readonly Paint[]): string {
+  return paints.map(paintKey).join('|')
+}
+function gradientPreview(paint: GradientPaint): string {
+  const stops = paint.gradientStops.map(stop => `${colorStopToHex(stop)} ${Math.round(stop.position * 100)}%`).join(', ')
+  return `linear-gradient(90deg, ${stops})`
 }
 function valuesEqual(a: VariableValue, b: VariableValue): boolean {
   if (typeof a !== typeof b) return false
@@ -424,6 +515,7 @@ function collectVariableAliasRefs(value: unknown, consumer: SceneNode, refs: Bou
 async function auditLibraries(): Promise<LibraryAudit> {
   const localCollections = await figma.variables.getLocalVariableCollectionsAsync()
   const localVariables = await figma.variables.getLocalVariablesAsync()
+  const localPaintStyles = await figma.getLocalPaintStylesAsync()
   const localTextStyles = await figma.getLocalTextStylesAsync()
   const nodes = figma.currentPage.findAllWithCriteria({ types: ['COMPONENT', 'COMPONENT_SET', 'INSTANCE'] })
   const localComponentNames: string[] = []
@@ -462,11 +554,13 @@ async function auditLibraries(): Promise<LibraryAudit> {
     }
   }
   const remoteStyleNames: string[] = []
+  const remotePaintStyleRecords: PaintStyle[] = []
   const remoteTextStyleRecords: TypographyStyleRecord[] = []
   for (const id of styleIds) {
     try {
       const style = await figma.getStyleByIdAsync(id)
       if (style?.remote) remoteStyleNames.push(style.name)
+      if (style?.remote && style.type === 'PAINT') remotePaintStyleRecords.push(style)
       if (style?.remote && style.type === 'TEXT') remoteTextStyleRecords.push(typographyRecordFromStyle(style))
       if (style && 'boundVariables' in style) collectVariableAliasIds(style.boundVariables, boundVariableIds)
     } catch {
@@ -547,6 +641,8 @@ async function auditLibraries(): Promise<LibraryAudit> {
     colors: new Set([
       ...localVariables.filter(v => v.resolvedType === 'COLOR').map(v => v.name),
       ...uniqueRemoteVariables.filter(v => v.resolvedType === 'COLOR').map(v => v.name),
+      ...localPaintStyles.map(s => s.name),
+      ...remotePaintStyleRecords.map(s => s.name),
     ]),
     typography: new Set([
       ...localTextStyles.map(s => s.name),
@@ -560,6 +656,15 @@ async function auditLibraries(): Promise<LibraryAudit> {
     ]),
   }
   const valueNamesByGroup: Record<TokenGroup, Map<string, string>> = { colors: new Map(), typography: new Map(), radius: new Map() }
+  const paintStyleNamesByKey = new Map<string, string>()
+  const paintStyleIdsByKey = new Map<string, string>()
+  for (const style of [...localPaintStyles, ...remotePaintStyleRecords]) {
+    const key = paintListKey(style.paints)
+    if (!paintStyleNamesByKey.has(key) || !style.remote) {
+      paintStyleNamesByKey.set(key, style.name)
+      paintStyleIdsByKey.set(key, style.id)
+    }
+  }
   const localTextStyleRecords = localTextStyles.map(typographyRecordFromStyle)
   const typographyStyleRecords = [...localTextStyleRecords, ...remoteTextStyleRecords]
   const typographyStylesBySignature = new Map<string, TypographyStyleRecord>()
@@ -604,6 +709,7 @@ async function auditLibraries(): Promise<LibraryAudit> {
     return (col?.name === typographyCollectionName || isTypographyVariableName(v.name)) && v.resolvedType !== 'COLOR'
   }).length
   const remoteColorVariables = uniqueRemoteVariables.filter(v => v.resolvedType === 'COLOR').length
+  const remotePaintStyles = remotePaintStyleRecords.length
   const remoteTypographyVariables = uniqueRemoteVariables.filter(v => v.resolvedType !== 'COLOR').length
   const remoteAvailableColorVariables = uniqueRemoteAvailableVariables.filter(v => v.resolvedType === 'COLOR').length
   const remoteAvailableTypographyVariables = uniqueRemoteAvailableVariables.filter(v => v.resolvedType !== 'COLOR').length
@@ -613,11 +719,13 @@ async function auditLibraries(): Promise<LibraryAudit> {
     localCollections: localCollections.length,
     localVariables: localVariables.length,
     localColorVariables,
+    localPaintStyles: localPaintStyles.length,
     localTypographyVariables,
     localTextStyles: localTextStyles.length,
     localComponents: localComponentNames.length,
     remoteComponents: remoteComponentNames.size,
     remoteStyles: remoteStyleNames.length,
+    remotePaintStyles,
     remoteCollections,
     remoteVariables: uniqueRemoteVariables.length,
     remoteColorVariables,
@@ -637,6 +745,7 @@ async function auditLibraries(): Promise<LibraryAudit> {
     summary,
     localCollections,
     localVariables,
+    localPaintStyles,
     localTextStyles,
     typographyStylesBySignature,
     typographyTemplates,
@@ -649,6 +758,8 @@ async function auditLibraries(): Promise<LibraryAudit> {
     namesByGroup,
     valueNamesByGroup,
     colorVariableIdsByValue,
+    paintStyleNamesByKey,
+    paintStyleIdsByKey,
     colorPrefix: mostCommonPrefix(colorNames, 'color'),
     radiusPrefix: mostCommonPrefix(radiusNames, 'radius'),
   }
@@ -664,7 +775,17 @@ function suggestColorName(audit: LibraryAudit, c: TokenColor): string {
     if (hex === 'ffffff') return `white-alpha/${alpha}`
     return `alpha/${hex}/${alpha}`
   }
+  if (isOpaqueGray(c)) return `gray/${hex}`
   return `${audit.colorPrefix}/${hex}`
+}
+function suggestGradientName(audit: LibraryAudit, paint: GradientPaint, key: string): string {
+  const existing = audit.paintStyleNamesByKey.get(key)
+  if (existing) return existing
+  const first = paint.gradientStops[0]
+  const last = paint.gradientStops[paint.gradientStops.length - 1]
+  const firstHex = first ? colorStopToHex(first).replace('#', '') : 'start'
+  const lastHex = last ? colorStopToHex(last).replace('#', '') : 'end'
+  return `gradient/${gradientLabel(paint.type)}/${firstHex}-${lastHex}/${stableHash(key)}`
 }
 function defaultTypographyName(fontSize: number, fontWeight: number, fontStyle: string, families: Set<string>, family: string): string {
   const role = roleToStyleName(classifyStyle(fontSize, fontWeight))
@@ -816,6 +937,11 @@ function classifyCandidate<T extends TokenCandidate>(candidate: T, audit: Librar
   }
   if (!names.has(candidate.targetName)) return { ...candidate, status: 'new', reason: undefined }
   if (candidate.group === 'colors') {
+    const colorCandidate = candidate as ColorCandidate
+    if (colorCandidate.kind === 'gradient') {
+      const matchName = audit.paintStyleNamesByKey.get(colorCandidate.valueKey)
+      return { ...colorCandidate, status: matchName === colorCandidate.targetName ? 'match' : 'conflict', reason: matchName === colorCandidate.targetName ? '已存在同值渐变样式' : '名称已存在但渐变参数不同' } as T
+    }
     const matchName = audit.valueNamesByGroup.colors.get(colorValueToString(value as VariableValue, true))
     return { ...candidate, status: matchName === candidate.targetName ? 'match' : 'conflict', reason: matchName === candidate.targetName ? '已存在同值颜色' : '名称已存在但颜色值不同' }
   }
@@ -844,6 +970,24 @@ function validateDuplicates(groups: Record<TokenGroup, TokenCandidate[]>, audit:
         const hasExistingSignature = audit.typographyStylesBySignature.has(typographyCandidate.valueKey)
         if (hasExistingName && !hasExistingSignature) {
           return { ...typographyCandidate, status: 'conflict', reason: '名称已存在但文字属性不同' } as TokenCandidate
+        }
+      }
+      if (group === 'colors' && (c.status === 'new' || c.status === 'invalid')) {
+        const colorCandidate = c as ColorCandidate
+        if (audit.namesByGroup.colors.has(colorCandidate.targetName)) {
+          if (colorCandidate.kind === 'gradient') {
+            const matchName = audit.paintStyleNamesByKey.get(colorCandidate.valueKey)
+            return { ...colorCandidate, status: matchName === colorCandidate.targetName ? 'match' : 'conflict', reason: matchName === colorCandidate.targetName ? '已存在同值渐变样式' : '名称已存在但渐变参数不同' } as TokenCandidate
+          }
+          const matchName = audit.valueNamesByGroup.colors.get(colorCandidate.hex)
+          return { ...colorCandidate, status: matchName === colorCandidate.targetName ? 'match' : 'conflict', reason: matchName === colorCandidate.targetName ? '已存在同值颜色' : '名称已存在但颜色值不同' } as TokenCandidate
+        }
+      }
+      if (group === 'radius' && (c.status === 'new' || c.status === 'invalid')) {
+        const radiusCandidate = c as RadiusCandidate
+        if (audit.namesByGroup.radius.has(radiusCandidate.targetName)) {
+          const matchName = audit.valueNamesByGroup.radius.get(String(radiusCandidate.value))
+          return { ...radiusCandidate, status: matchName === radiusCandidate.targetName ? 'match' : 'conflict', reason: matchName === radiusCandidate.targetName ? '已存在同值圆角' : '名称已存在但数值不同' } as TokenCandidate
         }
       }
       if ((counts.get(c.targetName) ?? 0) > 1 && !audit.namesByGroup[group].has(c.targetName)) {
@@ -948,10 +1092,48 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
     }
   }
 
+  function addGradientRef(
+    paints: readonly Paint[],
+    paint: GradientPaint,
+    node: SceneNode,
+    property: 'fills' | 'strokes',
+    paintIndex: number
+  ): void {
+    const key = paintListKey(paints)
+    const existing = colors.get(key)
+    const ref: BindingRef = { group: 'colors', nodeId: node.id, property, paintIndex, key }
+    if (existing) existing.refs.push(ref)
+    else {
+      const suggestedName = suggestGradientName(audit, paint, key)
+      const candidate: GradientColorCandidate = {
+        id: `gradient:${stableHash(key)}`,
+        group: 'colors',
+        kind: 'gradient',
+        status: 'new',
+        suggestedName,
+        targetName: suggestedName,
+        selected: true,
+        paints: clonePaints(paints),
+        valueKey: key,
+        hex: 'gradient',
+        gradientType: gradientLabel(paint.type),
+        stopCount: paint.gradientStops.length,
+        preview: gradientPreview(paint),
+        refs: [ref],
+      }
+      colors.set(key, classifyCandidate(candidate, audit, key))
+    }
+  }
+
   function collect(node: SceneNode): void {
     if ('fills' in node && Array.isArray(node.fills)) {
       node.fills.forEach((paint, paintIndex) => {
-        if (paint.type !== 'SOLID' || paint.visible === false) return
+        if (paint.visible === false) return
+        if (isGradientPaint(paint)) {
+          addGradientRef(node.fills as readonly Paint[], paint, node, 'fills', paintIndex)
+          return
+        }
+        if (paint.type !== 'SOLID') return
         const value = { ...paint.color, a: paint.opacity ?? 1 }
         const key = colorKey(value)
         const existing = colors.get(key)
@@ -962,6 +1144,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
           const candidate: ColorCandidate = {
             id: `color:${key}`,
             group: 'colors',
+            kind: 'solid',
             status: 'new',
             suggestedName,
             targetName: suggestedName,
@@ -977,7 +1160,12 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
     }
     if ('strokes' in node && Array.isArray(node.strokes)) {
       node.strokes.forEach((paint, paintIndex) => {
-        if (paint.type !== 'SOLID' || paint.visible === false) return
+        if (paint.visible === false) return
+        if (isGradientPaint(paint)) {
+          addGradientRef(node.strokes as readonly Paint[], paint, node, 'strokes', paintIndex)
+          return
+        }
+        if (paint.type !== 'SOLID') return
         const value = { ...paint.color, a: paint.opacity ?? 1 }
         const key = colorKey(value)
         const existing = colors.get(key)
@@ -988,6 +1176,7 @@ function collectSelectionCandidates(audit: LibraryAudit): Record<TokenGroup, Tok
           const candidate: ColorCandidate = {
             id: `color:${key}`,
             group: 'colors',
+            kind: 'solid',
             status: 'new',
             suggestedName,
             targetName: suggestedName,
@@ -1117,11 +1306,24 @@ function upsertVariable(name: string, value: VariableValue, type: VariableResolv
   }
 }
 async function applyColors(candidates: ColorCandidate[]): Promise<number> {
-  const collection = getOrCreateCollection(currentAudit?.summary.colorCollectionName ?? COLOR_COLLECTION)
+  let collection: VariableCollection | null = null
   const byKey = new Map<string, Variable>()
+  const paintStyleIdsByKey = new Map<string, string>()
   for (const c of candidates) {
+    if (c.kind === 'gradient') {
+      let styleId = currentAudit?.paintStyleIdsByKey.get(c.valueKey) ?? null
+      if (c.status === 'new') {
+        const style = figma.createPaintStyle()
+        style.name = c.targetName
+        style.paints = clonePaints(c.paints)
+        styleId = style.id
+      }
+      if (styleId) paintStyleIdsByKey.set(c.valueKey, styleId)
+      continue
+    }
     let v: Variable | null = null
     if (c.status === 'new') {
+      collection = collection ?? getOrCreateCollection(currentAudit?.summary.colorCollectionName ?? COLOR_COLLECTION)
       v = upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, 'COLOR', collection)
     } else {
       v = currentAudit?.localVariables.find(v => v.name === c.targetName && v.resolvedType === 'COLOR') ?? null
@@ -1133,6 +1335,30 @@ async function applyColors(candidates: ColorCandidate[]): Promise<number> {
     if (v) byKey.set(c.valueKey, v)
   }
   for (const c of candidates) {
+    if (c.kind === 'gradient') {
+      const styleId = paintStyleIdsByKey.get(c.valueKey)
+      if (!styleId) continue
+      for (const ref of c.refs) {
+        if (ref.group !== 'colors') continue
+        const node = getNode(ref.nodeId)
+        if (!node) continue
+        try {
+          if (ref.property === 'fills' && 'fillStyleId' in node) {
+            const fillNode = node as SceneNode & { fillStyleId: string; setFillStyleIdAsync?: (styleId: string) => Promise<void> }
+            if (fillNode.setFillStyleIdAsync) await fillNode.setFillStyleIdAsync(styleId)
+            else fillNode.fillStyleId = styleId
+          }
+          if (ref.property === 'strokes' && 'strokeStyleId' in node) {
+            const strokeNode = node as SceneNode & { strokeStyleId: string; setStrokeStyleIdAsync?: (styleId: string) => Promise<void> }
+            if (strokeNode.setStrokeStyleIdAsync) await strokeNode.setStrokeStyleIdAsync(styleId)
+            else strokeNode.strokeStyleId = styleId
+          }
+        } catch {
+          // Paint style binding is best effort; style creation remains valid.
+        }
+      }
+      continue
+    }
     const v = byKey.get(c.valueKey)
     if (!v) continue
     for (const ref of c.refs) {

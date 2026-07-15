@@ -64,6 +64,13 @@
   function rgbToHex(r, g, b) {
     return [r, g, b].map((v) => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
   }
+  function isOpaqueGray(c) {
+    if (c.a < 0.999) return false;
+    const r = Math.round(c.r * 255);
+    const g = Math.round(c.g * 255);
+    const b = Math.round(c.b * 255);
+    return r === g && g === b;
+  }
   function colorKey(c) {
     return `${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${Math.round(c.a * 100)}`;
   }
@@ -72,8 +79,76 @@
     if (c.a < 0.999) return `#${hex}${Math.round(c.a * 255).toString(16).padStart(2, "0")}`;
     return `#${hex}`;
   }
+  function colorStopToHex(stop) {
+    return hexColor({ r: stop.color.r, g: stop.color.g, b: stop.color.b, a: stop.color.a });
+  }
   function alphaPercent(c) {
     return Math.round(c.a * 100);
+  }
+  function isGradientPaint(paint) {
+    return paint.type === "GRADIENT_LINEAR" || paint.type === "GRADIENT_RADIAL" || paint.type === "GRADIENT_ANGULAR" || paint.type === "GRADIENT_DIAMOND";
+  }
+  function round4(value) {
+    return Math.round(value * 1e4) / 1e4;
+  }
+  function stableHash(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+      hash ^= value.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36).slice(0, 6);
+  }
+  function gradientLabel(type) {
+    if (type === "GRADIENT_RADIAL") return "radial";
+    if (type === "GRADIENT_ANGULAR") return "angular";
+    if (type === "GRADIENT_DIAMOND") return "diamond";
+    return "linear";
+  }
+  function clonePaints(paints) {
+    return paints.map((paint) => JSON.parse(JSON.stringify(paint)));
+  }
+  function paintKey(paint) {
+    var _a, _b, _c, _d;
+    if (paint.type === "SOLID") {
+      return JSON.stringify({
+        type: paint.type,
+        color: {
+          r: Math.round(paint.color.r * 255),
+          g: Math.round(paint.color.g * 255),
+          b: Math.round(paint.color.b * 255)
+        },
+        opacity: round4((_a = paint.opacity) != null ? _a : 1),
+        blendMode: (_b = paint.blendMode) != null ? _b : "NORMAL",
+        visible: paint.visible !== false
+      });
+    }
+    if (isGradientPaint(paint)) {
+      return JSON.stringify({
+        type: paint.type,
+        opacity: round4((_c = paint.opacity) != null ? _c : 1),
+        blendMode: (_d = paint.blendMode) != null ? _d : "NORMAL",
+        visible: paint.visible !== false,
+        transform: paint.gradientTransform.map((row) => row.map(round4)),
+        stops: paint.gradientStops.map((stop) => ({
+          position: round4(stop.position),
+          color: {
+            r: Math.round(stop.color.r * 255),
+            g: Math.round(stop.color.g * 255),
+            b: Math.round(stop.color.b * 255),
+            a: Math.round(stop.color.a * 100)
+          }
+        }))
+      });
+    }
+    return JSON.stringify(paint);
+  }
+  function paintListKey(paints) {
+    return paints.map(paintKey).join("|");
+  }
+  function gradientPreview(paint) {
+    const stops = paint.gradientStops.map((stop) => `${colorStopToHex(stop)} ${Math.round(stop.position * 100)}%`).join(", ");
+    return `linear-gradient(90deg, ${stops})`;
   }
   function resolveVariableValue(value, variables, collections, visited = /* @__PURE__ */ new Set()) {
     let current = value;
@@ -291,6 +366,7 @@
     var _a, _b, _c, _d, _e, _f, _g;
     const localCollections = await figma.variables.getLocalVariableCollectionsAsync();
     const localVariables = await figma.variables.getLocalVariablesAsync();
+    const localPaintStyles = await figma.getLocalPaintStylesAsync();
     const localTextStyles = await figma.getLocalTextStylesAsync();
     const nodes = figma.currentPage.findAllWithCriteria({ types: ["COMPONENT", "COMPONENT_SET", "INSTANCE"] });
     const localComponentNames = [];
@@ -328,11 +404,13 @@
       }
     }
     const remoteStyleNames = [];
+    const remotePaintStyleRecords = [];
     const remoteTextStyleRecords = [];
     for (const id of styleIds) {
       try {
         const style = await figma.getStyleByIdAsync(id);
         if (style == null ? void 0 : style.remote) remoteStyleNames.push(style.name);
+        if ((style == null ? void 0 : style.remote) && style.type === "PAINT") remotePaintStyleRecords.push(style);
         if ((style == null ? void 0 : style.remote) && style.type === "TEXT") remoteTextStyleRecords.push(typographyRecordFromStyle(style));
         if (style && "boundVariables" in style) collectVariableAliasIds(style.boundVariables, boundVariableIds);
       } catch (e) {
@@ -404,7 +482,9 @@
     const namesByGroup = {
       colors: /* @__PURE__ */ new Set([
         ...localVariables.filter((v) => v.resolvedType === "COLOR").map((v) => v.name),
-        ...uniqueRemoteVariables.filter((v) => v.resolvedType === "COLOR").map((v) => v.name)
+        ...uniqueRemoteVariables.filter((v) => v.resolvedType === "COLOR").map((v) => v.name),
+        ...localPaintStyles.map((s) => s.name),
+        ...remotePaintStyleRecords.map((s) => s.name)
       ]),
       typography: /* @__PURE__ */ new Set([
         ...localTextStyles.map((s) => s.name),
@@ -418,6 +498,15 @@
       ])
     };
     const valueNamesByGroup = { colors: /* @__PURE__ */ new Map(), typography: /* @__PURE__ */ new Map(), radius: /* @__PURE__ */ new Map() };
+    const paintStyleNamesByKey = /* @__PURE__ */ new Map();
+    const paintStyleIdsByKey = /* @__PURE__ */ new Map();
+    for (const style of [...localPaintStyles, ...remotePaintStyleRecords]) {
+      const key = paintListKey(style.paints);
+      if (!paintStyleNamesByKey.has(key) || !style.remote) {
+        paintStyleNamesByKey.set(key, style.name);
+        paintStyleIdsByKey.set(key, style.id);
+      }
+    }
     const localTextStyleRecords = localTextStyles.map(typographyRecordFromStyle);
     const typographyStyleRecords = [...localTextStyleRecords, ...remoteTextStyleRecords];
     const typographyStylesBySignature = /* @__PURE__ */ new Map();
@@ -459,6 +548,7 @@
       return ((col == null ? void 0 : col.name) === typographyCollectionName || isTypographyVariableName(v.name)) && v.resolvedType !== "COLOR";
     }).length;
     const remoteColorVariables = uniqueRemoteVariables.filter((v) => v.resolvedType === "COLOR").length;
+    const remotePaintStyles = remotePaintStyleRecords.length;
     const remoteTypographyVariables = uniqueRemoteVariables.filter((v) => v.resolvedType !== "COLOR").length;
     const remoteAvailableColorVariables = uniqueRemoteAvailableVariables.filter((v) => v.resolvedType === "COLOR").length;
     const remoteAvailableTypographyVariables = uniqueRemoteAvailableVariables.filter((v) => v.resolvedType !== "COLOR").length;
@@ -468,11 +558,13 @@
       localCollections: localCollections.length,
       localVariables: localVariables.length,
       localColorVariables,
+      localPaintStyles: localPaintStyles.length,
       localTypographyVariables,
       localTextStyles: localTextStyles.length,
       localComponents: localComponentNames.length,
       remoteComponents: remoteComponentNames.size,
       remoteStyles: remoteStyleNames.length,
+      remotePaintStyles,
       remoteCollections,
       remoteVariables: uniqueRemoteVariables.length,
       remoteColorVariables,
@@ -492,6 +584,7 @@
       summary,
       localCollections,
       localVariables,
+      localPaintStyles,
       localTextStyles,
       typographyStylesBySignature,
       typographyTemplates,
@@ -504,6 +597,8 @@
       namesByGroup,
       valueNamesByGroup,
       colorVariableIdsByValue,
+      paintStyleNamesByKey,
+      paintStyleIdsByKey,
       colorPrefix: mostCommonPrefix(colorNames, "color"),
       radiusPrefix: mostCommonPrefix(radiusNames, "radius")
     };
@@ -518,7 +613,17 @@
       if (hex === "ffffff") return `white-alpha/${alpha}`;
       return `alpha/${hex}/${alpha}`;
     }
+    if (isOpaqueGray(c)) return `gray/${hex}`;
     return `${audit.colorPrefix}/${hex}`;
+  }
+  function suggestGradientName(audit, paint, key) {
+    const existing = audit.paintStyleNamesByKey.get(key);
+    if (existing) return existing;
+    const first = paint.gradientStops[0];
+    const last = paint.gradientStops[paint.gradientStops.length - 1];
+    const firstHex = first ? colorStopToHex(first).replace("#", "") : "start";
+    const lastHex = last ? colorStopToHex(last).replace("#", "") : "end";
+    return `gradient/${gradientLabel(paint.type)}/${firstHex}-${lastHex}/${stableHash(key)}`;
   }
   function defaultTypographyName(fontSize, fontWeight, fontStyle, families, family) {
     const role = roleToStyleName(classifyStyle(fontSize, fontWeight));
@@ -654,6 +759,11 @@
     }
     if (!names.has(candidate.targetName)) return __spreadProps(__spreadValues({}, candidate), { status: "new", reason: void 0 });
     if (candidate.group === "colors") {
+      const colorCandidate = candidate;
+      if (colorCandidate.kind === "gradient") {
+        const matchName2 = audit.paintStyleNamesByKey.get(colorCandidate.valueKey);
+        return __spreadProps(__spreadValues({}, colorCandidate), { status: matchName2 === colorCandidate.targetName ? "match" : "conflict", reason: matchName2 === colorCandidate.targetName ? "\u5DF2\u5B58\u5728\u540C\u503C\u6E10\u53D8\u6837\u5F0F" : "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6E10\u53D8\u53C2\u6570\u4E0D\u540C" });
+      }
       const matchName = audit.valueNamesByGroup.colors.get(colorValueToString(value, true));
       return __spreadProps(__spreadValues({}, candidate), { status: matchName === candidate.targetName ? "match" : "conflict", reason: matchName === candidate.targetName ? "\u5DF2\u5B58\u5728\u540C\u503C\u989C\u8272" : "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u989C\u8272\u503C\u4E0D\u540C" });
     }
@@ -682,6 +792,24 @@
           const hasExistingSignature = audit.typographyStylesBySignature.has(typographyCandidate.valueKey);
           if (hasExistingName && !hasExistingSignature) {
             return __spreadProps(__spreadValues({}, typographyCandidate), { status: "conflict", reason: "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6587\u5B57\u5C5E\u6027\u4E0D\u540C" });
+          }
+        }
+        if (group === "colors" && (c.status === "new" || c.status === "invalid")) {
+          const colorCandidate = c;
+          if (audit.namesByGroup.colors.has(colorCandidate.targetName)) {
+            if (colorCandidate.kind === "gradient") {
+              const matchName2 = audit.paintStyleNamesByKey.get(colorCandidate.valueKey);
+              return __spreadProps(__spreadValues({}, colorCandidate), { status: matchName2 === colorCandidate.targetName ? "match" : "conflict", reason: matchName2 === colorCandidate.targetName ? "\u5DF2\u5B58\u5728\u540C\u503C\u6E10\u53D8\u6837\u5F0F" : "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6E10\u53D8\u53C2\u6570\u4E0D\u540C" });
+            }
+            const matchName = audit.valueNamesByGroup.colors.get(colorCandidate.hex);
+            return __spreadProps(__spreadValues({}, colorCandidate), { status: matchName === colorCandidate.targetName ? "match" : "conflict", reason: matchName === colorCandidate.targetName ? "\u5DF2\u5B58\u5728\u540C\u503C\u989C\u8272" : "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u989C\u8272\u503C\u4E0D\u540C" });
+          }
+        }
+        if (group === "radius" && (c.status === "new" || c.status === "invalid")) {
+          const radiusCandidate = c;
+          if (audit.namesByGroup.radius.has(radiusCandidate.targetName)) {
+            const matchName = audit.valueNamesByGroup.radius.get(String(radiusCandidate.value));
+            return __spreadProps(__spreadValues({}, radiusCandidate), { status: matchName === radiusCandidate.targetName ? "match" : "conflict", reason: matchName === radiusCandidate.targetName ? "\u5DF2\u5B58\u5728\u540C\u503C\u5706\u89D2" : "\u540D\u79F0\u5DF2\u5B58\u5728\u4F46\u6570\u503C\u4E0D\u540C" });
           }
         }
         if (((_a2 = counts.get(c.targetName)) != null ? _a2 : 0) > 1 && !audit.namesByGroup[group].has(c.targetName)) {
@@ -780,12 +908,43 @@
         radius.set(key, classifyCandidate(candidate, audit, value));
       }
     }
+    function addGradientRef(paints, paint, node, property, paintIndex) {
+      const key = paintListKey(paints);
+      const existing = colors.get(key);
+      const ref = { group: "colors", nodeId: node.id, property, paintIndex, key };
+      if (existing) existing.refs.push(ref);
+      else {
+        const suggestedName = suggestGradientName(audit, paint, key);
+        const candidate = {
+          id: `gradient:${stableHash(key)}`,
+          group: "colors",
+          kind: "gradient",
+          status: "new",
+          suggestedName,
+          targetName: suggestedName,
+          selected: true,
+          paints: clonePaints(paints),
+          valueKey: key,
+          hex: "gradient",
+          gradientType: gradientLabel(paint.type),
+          stopCount: paint.gradientStops.length,
+          preview: gradientPreview(paint),
+          refs: [ref]
+        };
+        colors.set(key, classifyCandidate(candidate, audit, key));
+      }
+    }
     function collect(node) {
       var _a;
       if ("fills" in node && Array.isArray(node.fills)) {
         node.fills.forEach((paint, paintIndex) => {
           var _a2;
-          if (paint.type !== "SOLID" || paint.visible === false) return;
+          if (paint.visible === false) return;
+          if (isGradientPaint(paint)) {
+            addGradientRef(node.fills, paint, node, "fills", paintIndex);
+            return;
+          }
+          if (paint.type !== "SOLID") return;
           const value = __spreadProps(__spreadValues({}, paint.color), { a: (_a2 = paint.opacity) != null ? _a2 : 1 });
           const key = colorKey(value);
           const existing = colors.get(key);
@@ -796,6 +955,7 @@
             const candidate = {
               id: `color:${key}`,
               group: "colors",
+              kind: "solid",
               status: "new",
               suggestedName,
               targetName: suggestedName,
@@ -812,7 +972,12 @@
       if ("strokes" in node && Array.isArray(node.strokes)) {
         node.strokes.forEach((paint, paintIndex) => {
           var _a2;
-          if (paint.type !== "SOLID" || paint.visible === false) return;
+          if (paint.visible === false) return;
+          if (isGradientPaint(paint)) {
+            addGradientRef(node.strokes, paint, node, "strokes", paintIndex);
+            return;
+          }
+          if (paint.type !== "SOLID") return;
           const value = __spreadProps(__spreadValues({}, paint.color), { a: (_a2 = paint.opacity) != null ? _a2 : 1 });
           const key = colorKey(value);
           const existing = colors.get(key);
@@ -823,6 +988,7 @@
             const candidate = {
               id: `color:${key}`,
               group: "colors",
+              kind: "solid",
               status: "new",
               suggestedName,
               targetName: suggestedName,
@@ -947,15 +1113,28 @@
     }
   }
   async function applyColors(candidates) {
-    var _a, _b;
-    const collection = getOrCreateCollection((_a = currentAudit == null ? void 0 : currentAudit.summary.colorCollectionName) != null ? _a : COLOR_COLLECTION);
+    var _a, _b, _c;
+    let collection = null;
     const byKey = /* @__PURE__ */ new Map();
+    const paintStyleIdsByKey = /* @__PURE__ */ new Map();
     for (const c of candidates) {
+      if (c.kind === "gradient") {
+        let styleId = (_a = currentAudit == null ? void 0 : currentAudit.paintStyleIdsByKey.get(c.valueKey)) != null ? _a : null;
+        if (c.status === "new") {
+          const style = figma.createPaintStyle();
+          style.name = c.targetName;
+          style.paints = clonePaints(c.paints);
+          styleId = style.id;
+        }
+        if (styleId) paintStyleIdsByKey.set(c.valueKey, styleId);
+        continue;
+      }
       let v = null;
       if (c.status === "new") {
+        collection = collection != null ? collection : getOrCreateCollection((_b = currentAudit == null ? void 0 : currentAudit.summary.colorCollectionName) != null ? _b : COLOR_COLLECTION);
         v = upsertVariable(c.targetName, { r: c.value.r, g: c.value.g, b: c.value.b, a: c.value.a }, "COLOR", collection);
       } else {
-        v = (_b = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "COLOR")) != null ? _b : null;
+        v = (_c = currentAudit == null ? void 0 : currentAudit.localVariables.find((v2) => v2.name === c.targetName && v2.resolvedType === "COLOR")) != null ? _c : null;
         if (!v) {
           const id = currentAudit == null ? void 0 : currentAudit.colorVariableIdsByValue.get(hexColor(c.value));
           if (id) v = await figma.variables.getVariableByIdAsync(id);
@@ -964,6 +1143,29 @@
       if (v) byKey.set(c.valueKey, v);
     }
     for (const c of candidates) {
+      if (c.kind === "gradient") {
+        const styleId = paintStyleIdsByKey.get(c.valueKey);
+        if (!styleId) continue;
+        for (const ref of c.refs) {
+          if (ref.group !== "colors") continue;
+          const node = getNode(ref.nodeId);
+          if (!node) continue;
+          try {
+            if (ref.property === "fills" && "fillStyleId" in node) {
+              const fillNode = node;
+              if (fillNode.setFillStyleIdAsync) await fillNode.setFillStyleIdAsync(styleId);
+              else fillNode.fillStyleId = styleId;
+            }
+            if (ref.property === "strokes" && "strokeStyleId" in node) {
+              const strokeNode = node;
+              if (strokeNode.setStrokeStyleIdAsync) await strokeNode.setStrokeStyleIdAsync(styleId);
+              else strokeNode.strokeStyleId = styleId;
+            }
+          } catch (e) {
+          }
+        }
+        continue;
+      }
       const v = byKey.get(c.valueKey);
       if (!v) continue;
       for (const ref of c.refs) {
