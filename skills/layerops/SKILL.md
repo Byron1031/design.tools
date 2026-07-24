@@ -23,7 +23,7 @@ Always load the `figma-use` skill before any `use_figma` call.
    - Only unlocked nodes when requested.
 3. For page-level or ambiguous work, count target frames first.
 4. Run incremental mode unless the user explicitly requests a full rewrite.
-5. Inspect each plausible asset node using the asset decision process below.
+5. Inspect each plausible asset node using the asset decision process below. Non-component standalone icons, static images, and visual-resource frames must receive an asset decision.
 6. Rename roots before descendants.
 7. Apply `asset_...__format` only to confirmed export roots.
 8. Record LayerOps shared plugin data when supported.
@@ -287,7 +287,15 @@ asset_decoration_home_header__png
 asset_background_onboarding__jpg
 ```
 
-An image fill, vector, gradient, effect, frame, or group is construction evidence, not proof that the node should be exported.
+Component status is the first asset boundary:
+
+- A shared icon or UI component `INSTANCE` normally maps to code and is not exported.
+- A non-component standalone icon is an asset by default.
+- A non-component static image is an asset by default.
+- A non-component `FRAME` that bounds one complete icon, image, illustration, logo, decoration, or visual background is an asset by default.
+- An ordinary layout `FRAME` remains UI structure and is not an asset.
+
+Node type alone is not enough to classify an ordinary frame, but it is sufficient when a non-component node has a clear icon, image, or complete visual-resource role.
 
 ### Required Inspection
 
@@ -298,6 +306,7 @@ Before deciding, inspect:
 - Paint fills, including image fills and opacity.
 - Effects, masks, blend modes, and clipping.
 - Whether it is a component or instance and the source component role.
+- Whether the node itself is the smallest non-component icon, image, or visual-resource frame.
 - Child structure, editable text, controls, navigation, and list content.
 - Whether content is static product artwork or runtime/user/remote content.
 - Whether ordinary Android UI primitives can reproduce it faithfully.
@@ -309,8 +318,9 @@ Classify every plausible resource as `confirmed`, `candidate`, or `excluded`. Ap
 
 1. Explicit confirmation.
 2. Hard exclusion.
-3. High-confidence inferred confirmation.
-4. Candidate.
+3. Non-component resource confirmation.
+4. Other high-confidence inferred confirmation.
+5. Candidate.
 
 Explicit confirmation:
 
@@ -327,12 +337,21 @@ Hard exclusions, unless the user explicitly overrides:
 - User avatar, uploaded media, feed/product photo, remote thumbnail, or runtime placeholder.
 - Solid fill, ordinary gradient, border, rounded rectangle, divider, scrim, or code-supported shadow.
 - Shared UI component instance or its internals.
-- Standard Material/platform icon expected to map to a code icon.
+- Shared Material/platform icon component instances expected to map to a code icon.
 - Button, tab, toolbar, dialog, card, list row, text, badge, or other UI control.
 - Ordinary layout `FRAME` or `GROUP`.
 - Child of a confirmed asset root, unless independently reused and explicitly exported.
 
-High-confidence inferred confirmation, only when no exclusion applies:
+Non-component resource confirmation, when no hard exclusion applies:
+
+- A standalone icon built as `VECTOR`, `BOOLEAN_OPERATION`, `FRAME`, or another non-component vector container. Mark the smallest complete icon root as `asset_icon_{semantic_name}__svg`.
+- A static `IMAGE` node or non-component node with an image fill that is part of the shipped design. Use PNG when transparency or exact compositing is needed; otherwise use JPG for opaque photographic content.
+- A non-component `FRAME` whose descendants form one complete visual resource such as an icon, logo, illustration, decoration, badge, or static background. Mark the outer resource frame, not its children.
+- A non-component frame or image already named with a clear static-resource role such as `icon`, `logo`, `illustration`, `decoration`, `artwork`, `background`, or `photo`.
+
+Do not require existing `exportSettings` for these non-component resources. Their independent visual role is sufficient evidence.
+
+Other high-confidence inferred confirmation, only when no exclusion applies:
 
 - Standalone vector/image brand logo, symbol, or wordmark rather than editable text.
 - Fixed raster decoration or illustration with transparency, blur, masks, or effects that code cannot faithfully reproduce.
@@ -340,9 +359,9 @@ High-confidence inferred confirmation, only when no exclusion applies:
 
 Candidate examples:
 
-- Image fill with unclear static versus runtime ownership.
-- Standalone vector that may be a custom asset, standard icon, divider, mask, or shape.
-- Photo-like fill with unclear ownership.
+- Image fill whose ownership is genuinely unclear between shipped static artwork and runtime/user content.
+- Vector that is not a complete icon and may instead be a divider, mask, background shape, or internal child.
+- Photo-like fill whose static versus runtime ownership is unclear.
 - Decorative background or multi-layer frame mixing artwork and UI.
 - Local component that may package artwork rather than reusable code UI.
 
@@ -373,6 +392,10 @@ decorative_line
 
 | Confirmed asset | Naming |
 |---|---|
+| Non-component standalone icon | `asset_icon_*__svg` |
+| Non-component static image with transparency | `asset_image_*__png` |
+| Non-component opaque photo | `asset_photo_*__jpg` |
+| Non-component complete visual frame | `asset_illustration_*__svg`, `asset_decoration_*__png`, or another role-appropriate asset name |
 | Pure vector logo, custom icon, badge, illustration | `asset_logo_*__svg`, `asset_icon_*__svg`, `asset_badge_*__svg`, `asset_illustration_*__svg` |
 | Transparent or effect-heavy static artwork | `asset_decoration_*__png`, `asset_illustration_*__png` |
 | Opaque photo or photographic background | `asset_photo_*__jpg`, `asset_background_*__jpg` |
@@ -385,6 +408,9 @@ Decision examples:
 ```text
 status_bar_mockup -> excluded
 bg_upgrade_banner_gradient -> excluded
+non_component_toolbar_icon -> asset_icon_toolbar_action__svg
+non_component_static_image -> asset_image_feature_preview__png
+non_component_visual_frame -> asset_illustration_empty_state__svg
 brand_wordmark -> asset_logo_brand_wordmark__svg
 fixed_banner_artwork -> asset_decoration_upgrade_banner__png
 avatar_image -> iv_profile_avatar
@@ -397,6 +423,9 @@ Validate after renaming:
 - Ordinary names match `^[a-z][a-z0-9_]*$`.
 - Asset roots match `^asset_[a-z0-9]+(?:_[a-z0-9]+)*__(svg|png|jpg)$`.
 - Every asset marker has a confirmed decision.
+- Every non-component standalone icon has an `asset_icon_*__svg` marker.
+- Every non-component static image has an `asset_*__png` or `asset_*__jpg` marker.
+- Every non-component frame that bounds a complete visual resource has one asset marker on its outer root.
 - Candidates and exclusions never receive asset markers.
 - Asset children do not repeat the marker unless separately exported.
 - Non-assets do not contain `__svg`, `__png`, or `__jpg`.
