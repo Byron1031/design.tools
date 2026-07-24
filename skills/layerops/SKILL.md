@@ -47,6 +47,7 @@ Reruns must avoid name churn after designers add layers.
 - Preserve a node marked with LayerOps shared plugin data unless it is now invalid.
 - Rename new, untagged, or non-compliant nodes.
 - Rename confirmed export roots that still lack a valid asset marker.
+- Re-evaluate existing asset markers against hard exclusions. Remove an erroneous asset marker and export metadata when a node is actually placeholder, preview, runtime, or mock content.
 - Never promote an ambiguous asset candidate during a rerun without stronger evidence.
 - Preserve a manually improved valid name even when another valid synonym exists.
 - Use full rewrite mode only when explicitly requested.
@@ -67,6 +68,15 @@ node.setSharedPluginData('layerops', 'export', '1')
 node.setSharedPluginData('layerops', 'asset_kind', 'illustration')
 node.setSharedPluginData('layerops', 'export_format', 'png')
 node.setSharedPluginData('layerops', 'decision_source', 'inferred')
+```
+
+When correcting a stale asset decision:
+
+```js
+node.setSharedPluginData('layerops', 'export', '0')
+node.setSharedPluginData('layerops', 'asset_kind', '')
+node.setSharedPluginData('layerops', 'export_format', '')
+node.setSharedPluginData('layerops', 'decision_source', 'excluded_content_role')
 ```
 
 Use shared plugin data only. `use_figma` does not support `getPluginData` or `setPluginData`.
@@ -287,11 +297,12 @@ asset_decoration_home_header__png
 asset_background_onboarding__jpg
 ```
 
-Component status is the first asset boundary:
+Content ownership is the first asset boundary; component status is the second:
 
+- Placeholder, template-preview, sample-preview, and runtime-loaded content is not an asset, even when represented by a non-component frame or image.
 - A shared icon or UI component `INSTANCE` normally maps to code and is not exported.
 - A non-component standalone icon is an asset by default.
-- A non-component static image is an asset by default.
+- A non-component static image that ships as fixed product artwork is an asset by default.
 - A non-component `FRAME` that bounds one complete icon, image, illustration, logo, decoration, or visual background is an asset by default.
 - An ordinary layout `FRAME` remains UI structure and is not an asset.
 
@@ -309,32 +320,47 @@ Before deciding, inspect:
 - Whether the node itself is the smallest non-component icon, image, or visual-resource frame.
 - Child structure, editable text, controls, navigation, and list content.
 - Whether content is static product artwork or runtime/user/remote content.
+- Whether it is a placeholder, template preview, preset preview, sample thumbnail, mock image, replaceable slot, or repeated catalog/list content.
 - Whether ordinary Android UI primitives can reproduce it faithfully.
 - Whether an ancestor is already a confirmed export root.
+
+### Placeholder And Preview Detection
+
+Do not rely only on the current layer name. Treat a non-component frame or image as excluded preview/content when its role is established by one or more strong contextual signals:
+
+- It sits inside a template, preset, style, filter, media, or content picker.
+- It is one of several repeated, similarly sized images in a card list, grid, carousel, or catalog.
+- It has selection borders, checkmarks, lock/pro badges, labels, replace controls, or tap targets layered around it.
+- The surrounding UI lets the user upload, replace, choose, apply, or browse the represented content.
+- The image is a generic placeholder, sample composition, demo result, thumbnail, or preview of content that changes independently of the app release.
+- The implementation is expected to load the content from user storage, a database, network, CMS, template catalog, or media pipeline.
+
+An explicit role such as template preview or placeholder is enough to exclude it. When context is insufficient to distinguish fixed artwork from preview/runtime content, classify the node as `candidate` and do not add `asset_`.
 
 ### Decision Order
 
 Classify every plausible resource as `confirmed`, `candidate`, or `excluded`. Apply this precedence:
 
-1. Explicit confirmation.
+1. Node-specific user override.
 2. Hard exclusion.
-3. Non-component resource confirmation.
-4. Other high-confidence inferred confirmation.
-5. Candidate.
+3. Explicit technical confirmation.
+4. Non-component resource confirmation.
+5. Other high-confidence inferred confirmation.
+6. Candidate.
 
-Explicit confirmation:
+Node-specific user override:
 
-- Non-empty Figma `exportSettings`.
-- LayerOps shared data `export=1`.
 - The user explicitly identifies the node as a file resource.
-- An already valid `asset_...__format` name.
 
 A page/frame selected for general renaming does not explicitly confirm every descendant.
 
 Hard exclusions, unless the user explicitly overrides:
 
 - Status bar, navigation bar, home indicator, device frame, keyboard mockup.
-- User avatar, uploaded media, feed/product photo, remote thumbnail, or runtime placeholder.
+- User avatar, uploaded media, feed/product photo, remote thumbnail, or other runtime-loaded content.
+- Image placeholders, empty media slots, skeleton images, mock images, and replaceable upload/selection targets.
+- Template previews, preset previews, sample thumbnails, demo content, and catalog previews, including local non-component images or frames used inside cards, lists, grids, carousels, or pickers.
+- A frame whose purpose is to preview selectable content rather than provide fixed visual decoration for the interface.
 - Solid fill, ordinary gradient, border, rounded rectangle, divider, scrim, or code-supported shadow.
 - Shared UI component instance or its internals.
 - Shared Material/platform icon component instances expected to map to a code icon.
@@ -342,10 +368,18 @@ Hard exclusions, unless the user explicitly overrides:
 - Ordinary layout `FRAME` or `GROUP`.
 - Child of a confirmed asset root, unless independently reused and explicitly exported.
 
+Semantic hard exclusions override `exportSettings`, old LayerOps `export=1` metadata, and an existing `asset_...__format` name. These technical signals may be stale or may describe design-tool export convenience rather than an Android bundle resource.
+
+Explicit technical confirmation, only after hard exclusions:
+
+- Non-empty Figma `exportSettings`.
+- LayerOps shared data `export=1`.
+- An already valid `asset_...__format` name.
+
 Non-component resource confirmation, when no hard exclusion applies:
 
 - A standalone icon built as `VECTOR`, `BOOLEAN_OPERATION`, `FRAME`, or another non-component vector container. Mark the smallest complete icon root as `asset_icon_{semantic_name}__svg`.
-- A static `IMAGE` node or non-component node with an image fill that is part of the shipped design. Use PNG when transparency or exact compositing is needed; otherwise use JPG for opaque photographic content.
+- A static `IMAGE` node or non-component node with an image fill that ships as fixed interface artwork, not placeholder, preview, sample, or runtime content. Use PNG when transparency or exact compositing is needed; otherwise use JPG for opaque photographic content.
 - A non-component `FRAME` whose descendants form one complete visual resource such as an icon, logo, illustration, decoration, badge, or static background. Mark the outer resource frame, not its children.
 - A non-component frame or image already named with a clear static-resource role such as `icon`, `logo`, `illustration`, `decoration`, `artwork`, `background`, or `photo`.
 
@@ -360,6 +394,7 @@ Other high-confidence inferred confirmation, only when no exclusion applies:
 Candidate examples:
 
 - Image fill whose ownership is genuinely unclear between shipped static artwork and runtime/user content.
+- Image or frame whose role is unclear between fixed decoration and selectable template/preset preview content.
 - Vector that is not a complete icon and may instead be a divider, mask, background shape, or internal child.
 - Photo-like fill whose static versus runtime ownership is unclear.
 - Decorative background or multi-layer frame mixing artwork and UI.
@@ -408,8 +443,12 @@ Decision examples:
 ```text
 status_bar_mockup -> excluded
 bg_upgrade_banner_gradient -> excluded
+media_placeholder -> iv_media_placeholder
+template_preview_frame -> container_template_preview
+template_preview_image -> iv_template_preview
+preset_sample_thumbnail -> iv_preset_preview
 non_component_toolbar_icon -> asset_icon_toolbar_action__svg
-non_component_static_image -> asset_image_feature_preview__png
+non_component_static_artwork -> asset_image_feature_artwork__png
 non_component_visual_frame -> asset_illustration_empty_state__svg
 brand_wordmark -> asset_logo_brand_wordmark__svg
 fixed_banner_artwork -> asset_decoration_upgrade_banner__png
@@ -424,8 +463,10 @@ Validate after renaming:
 - Asset roots match `^asset_[a-z0-9]+(?:_[a-z0-9]+)*__(svg|png|jpg)$`.
 - Every asset marker has a confirmed decision.
 - Every non-component standalone icon has an `asset_icon_*__svg` marker.
-- Every non-component static image has an `asset_*__png` or `asset_*__jpg` marker.
+- Every eligible non-component fixed-artwork image has an `asset_*__png` or `asset_*__jpg` marker.
 - Every non-component frame that bounds a complete visual resource has one asset marker on its outer root.
+- Placeholders, template/preset previews, sample thumbnails, demo content, and runtime images never have an asset marker unless the user explicitly overrides that node.
+- Existing asset names and export metadata are removed when their nodes resolve to a hard-excluded content role.
 - Candidates and exclusions never receive asset markers.
 - Asset children do not repeat the marker unless separately exported.
 - Non-assets do not contain `__svg`, `__png`, or `__jpg`.
