@@ -1,186 +1,427 @@
 ---
 name: layerops
-description: Rename Figma design layers into Android-friendly, lower_snake_case business-semantic names for any Android project. Use when the user asks to rename Figma frames/pages/layers for Android development, normalize design layer names, remove visible copy from layer names, preserve or functionalize component instance names, or audit a Figma page/frame for naming quality.
+description: Rename Figma design layers into Android-friendly lower_snake_case business-semantic names, identify implementation asset export roots, and preserve valid existing names on incremental reruns. Use for Android Figma frame, page, layer, component, or asset naming and audits.
 ---
 
 # LayerOps
 
-## Overview
+## Purpose
 
-Use this skill to rename Figma layers so design structure maps cleanly to Android UI implementation across projects. The goal is stable business/control semantics, not visual-shape names, visible strings, or project-specific page-context filler.
+Rename Figma layers so design structure maps cleanly to Android UI implementation. Use stable business and control semantics instead of visible copy, visual-shape descriptions, Figma defaults, or source-project page filler.
 
-Always use this together with the `figma-use` skill before any `use_figma` call.
+This file is self-contained. Do not depend on optional reference files for naming or asset decisions.
 
-Read these references when needed:
+Always load the `figma-use` skill before any `use_figma` call.
 
-- `references/naming-rules.md` for detailed naming rules, examples, and validation patterns.
-- `references/android-guidance.md` when explaining why names should map to Android IDs, resources, Compose test tags, or UI state names.
-- `references/component-presets.md` when choosing names for common Material Design / Android UI components such as buttons, app bars, navigation, inputs, chips, cards, dialogs, sheets, progress, lists, images, and state views.
+## Mandatory Workflow
 
-## Workflow
-
-1. Load `figma-use` and inspect the target.
-2. Determine the scope:
-   - Single frame subtree.
+1. Inspect the target before changing names.
+2. Resolve scope:
+   - A single frame subtree.
    - A page's direct frames.
-   - A page's direct frames plus frames inside named sections.
-   - Only unlocked layers if the user says so.
-3. Count and report the target frames before renaming when the scope is page-level or ambiguous.
-4. Run in incremental mode by default: preserve existing valid names, and rename only new or non-compliant layers.
-5. Rename roots first, then descendants.
-6. Mark successfully processed nodes with shared plugin data when possible.
-7. Validate the result and report counts.
+   - Direct frames plus frames inside relevant sections.
+   - Only unlocked nodes when requested.
+3. For page-level or ambiguous work, count target frames first.
+4. Run incremental mode unless the user explicitly requests a full rewrite.
+5. Inspect each plausible asset node using the asset decision process below.
+6. Rename roots before descendants.
+7. Apply `asset_...__format` only to confirmed export roots.
+8. Record LayerOps shared plugin data when supported.
+9. Validate and report the result.
 
-## Scope Rules
+Do not infer asset intent from a name alone. Inspect node type, fills, effects, export settings, component relationship, children, text, and UI role.
 
-- If the user gives a Figma URL with `node-id`, extract it as `123:456`.
-- If the node is a `PAGE`, include direct child `FRAME` nodes. If named sections such as `Section 1` are relevant or the user mentions them, include each section's direct child frames too.
-- If the node is a `FRAME`, rename that frame and its accessible descendants.
-- If the user says "unlocked only", skip locked nodes and descendants inside locked ancestors.
-- Do not detach instances just to rename inaccessible internals.
+## Scope
+
+- Convert a Figma URL `node-id=123-456` to node ID `123:456`.
+- For a `PAGE`, include direct child `FRAME` nodes. Include direct frames inside named sections when the user includes those sections.
+- For a `FRAME`, process the frame and accessible descendants.
+- For "unlocked only", skip locked nodes and descendants of locked ancestors.
+- Do not detach instances to reach inaccessible internals.
 
 ## Incremental Reruns
 
-LayerOps must be safe to rerun after designers add new layers.
+Reruns must avoid name churn after designers add layers.
 
-Default behavior:
+- Preserve an existing name that passes all rules.
+- Preserve a node marked with LayerOps shared plugin data unless it is now invalid.
+- Rename new, untagged, or non-compliant nodes.
+- Rename confirmed export roots that still lack a valid asset marker.
+- Never promote an ambiguous asset candidate during a rerun without stronger evidence.
+- Preserve a manually improved valid name even when another valid synonym exists.
+- Use full rewrite mode only when explicitly requested.
 
-- Do not rename an existing layer if its current name already passes LayerOps validation.
-- Do not rename a layer that has LayerOps shared plugin data unless it has become non-compliant.
-- Rename only layers that are new, untagged and non-compliant, or clearly still using Figma/default/visible-copy/project-context names.
-- Treat `Frame 1`, `Rectangle 2`, `Vector 3`, `Group 4`, visible UI strings, and project-context filler as likely new or unfinished layers.
-- Preserve manually improved names even if another valid name could also be generated.
+Common unfinished names include `Frame 1`, `Rectangle 2`, `Vector 3`, `Group 4`, visible UI strings, variant-property strings, and inherited page-context names.
 
-Use full rewrite mode only when the user explicitly asks for a complete renaming pass, reset, or re-normalization of all existing names.
-
-When using `use_figma`, prefer shared plugin data to mark processed nodes:
+When supported:
 
 ```js
 node.setSharedPluginData('layerops', 'processed', '1')
 node.setSharedPluginData('layerops', 'name', node.name)
 ```
 
-Do not use `getPluginData` or `setPluginData`; `use_figma` does not support them.
+For confirmed asset roots:
+
+```js
+node.setSharedPluginData('layerops', 'export', '1')
+node.setSharedPluginData('layerops', 'asset_kind', 'illustration')
+node.setSharedPluginData('layerops', 'export_format', 'png')
+node.setSharedPluginData('layerops', 'decision_source', 'inferred')
+```
+
+Use shared plugin data only. `use_figma` does not support `getPluginData` or `setPluginData`.
 
 ## Android Alignment
 
-Figma layer names should be easy to map to Android implementation names:
+Use `lower_snake_case` for all Figma layer names. This maps cleanly to:
 
-- XML/View IDs: `@+id/profile_save_button` and `R.id.profile_save_button`.
-- Resource names: `R.drawable.ic_profile_avatar` or `R.string.profile_title`.
-- Compose test tags / semantics names: stable node identifiers for testing.
-- UI state names: feature semantics that can convert to `ProfileEditorUiState`, `CheckoutSummaryUiState`, or similar code names.
+- XML/View IDs such as `@+id/profile_save_button` and `R.id.profile_save_button`.
+- Resource names such as `R.drawable.ic_profile_avatar`.
+- Stable Compose test tags and semantics identifiers.
+- Feature names that can convert to `ProfileEditor`, `ProfileEditorViewModel`, or `ProfileEditorUiState`.
 
-Keep Figma layer names in `lower_snake_case`. Do not copy Kotlin code style directly into Figma names: Kotlin classes and Composables may use PascalCase, and functions/properties may use camelCase, but Figma layer names should stay resource/test-tag friendly.
+Do not copy Kotlin casing into Figma. Types and Composables may become PascalCase in code; functions and properties may become camelCase.
 
-## Naming Rules
+Use functionality and UI role:
 
-Use `lower_snake_case`.
+```text
+profile_editor -> ProfileEditor / ProfileEditorUiState / R.id.profile_editor
+btn_save -> R.id.btn_save / Modifier.testTag("btn_save")
+dialog_delete_confirm -> dialog composable or dialog view
+```
 
-Frame roots do not use `screen_`. Name them directly by business module/state:
+## Core Naming Rules
+
+- Use `^[a-z][a-z0-9_]*$`.
+- Root frames use feature, module, or state names without a `screen_` prefix.
+- Descendants use their local UI role, not the page name.
+- Do not copy visible copy, prices, legal text, localized strings, or user content.
+- Do not use `/` for page-instance hierarchy; Figma nesting already expresses hierarchy.
+- `/` is acceptable only in design-system component source names such as `Button / Filled / Large`.
+- Use two-digit indices for repeated siblings when ordering matters: `row_result_item_01`.
+- Name by role before appearance: `selected_indicator`, not `blue_rectangle`.
+- Keep examples and generated names neutral to the current project. Never inject names from another project.
+
+Root examples:
 
 ```text
 profile_editor
 settings_panel
 checkout_summary
 media_picker
+search_results
+auth_sign_in
 upgrade_dialog
 notification_permission_sheet
 ```
 
-Descendants and component instances use actual business/control properties, not page-name fallback:
+Descendant examples:
 
 ```text
-dialog_upgrade_offer
 toolbar_primary
 tab_filter_item_01
 btn_primary_cta
-row_order_item_03
-card_plan_option_02
-```
-
-Do not directly copy visible strings into layer names. Convert strings into stable roles:
-
-```text
-btn_primary_cta
 tv_primary_cta_label
-card_plan_option_01
+card_plan_option_02
+row_order_item_03
 legal_link_secondary
-benefit_item_03
+empty_state
 ```
 
-For the full rule set, read `references/naming-rules.md`.
-
-For base component and element presets, read `references/component-presets.md` and reuse its recommended layer names before inventing new names.
-
-## Component Instance Rule
-
-For referenced components, the outermost `INSTANCE` can be:
-
-- Preserved if the source/component name is stable and useful.
-- Renamed by actual function if it has a clear role.
-
-Do not keep generic fallback names like:
+Avoid:
 
 ```text
+screen_profile_editor
+UploadCard / FirstFrame
+TopBar / CurrentMode=AI
+Continue
+Best Value
+Blue Rectangle
 component_home_03
+```
+
+## Component Instances
+
+An outer `INSTANCE` may keep its source name only when that name is stable, semantic, and useful to implementation. Otherwise rename it by actual function.
+
+Preserve or use:
+
+```text
+icon_toolbar_back
+btn_primary_cta
+tab_filter_item_01
+component_account_balance
+dialog_upgrade_offer
+sheet_action_menu
+```
+
+Replace variant strings and generic fallbacks:
+
+```text
+Mode=Light
+State=Default
+Size=Large, Variant=Filled
+hasTopImage=true, buttonCount=one
 component_dashboard_02
 ```
 
-Use a role instead:
+Shared icon component instances normally map to code components and are not exported.
+
+## Android Component Presets
+
+Use these presets before inventing a new component term. Add a business qualifier or sibling index as needed.
+
+### Actions
+
+| UI role | Recommended names |
+|---|---|
+| Button | `btn_primary`, `btn_secondary`, `btn_primary_cta` |
+| Filled button | `btn_primary_filled` |
+| Tonal button | `btn_secondary_tonal` |
+| Outlined button | `btn_secondary_outlined` |
+| Text button | `btn_text_action` |
+| Elevated button | `btn_elevated_action` |
+| Icon button | `btn_icon_toolbar_back` |
+| Floating action button | `fab_primary`, `fab_extended_primary` |
+| Segmented button | `segmented_mode_control` |
+
+### Navigation
+
+| UI role | Recommended names |
+|---|---|
+| Top app bar / toolbar | `top_app_bar`, `toolbar_primary` |
+| Center, medium, large app bar | `top_app_bar_center_aligned`, `top_app_bar_medium`, `top_app_bar_large` |
+| Bottom app bar | `bottom_app_bar` |
+| Navigation bar | `bottom_navigation_bar` |
+| Navigation item | `bottom_navigation_item_01` |
+| Navigation rail | `navigation_rail`, `navigation_rail_item_01` |
+| Navigation drawer | `navigation_drawer`, `navigation_drawer_item_01` |
+| Tabs | `tab_bar`, `tab_filter_item_01` |
+
+### Inputs And Selection
+
+| UI role | Recommended names |
+|---|---|
+| Text field | `text_field_email`, `text_field_search` |
+| Outlined / filled field | `text_field_email_outlined`, `text_field_email_filled` |
+| Search | `search_bar`, `search_view` |
+| Checkbox | `checkbox_terms` |
+| Radio button | `radio_option_01` |
+| Switch | `switch_notifications` |
+| Slider | `slider_volume`, `slider_price_range` |
+| Date / time picker | `date_picker`, `time_picker` |
+| Chips | `chip_assist_01`, `chip_filter_01`, `chip_input_01`, `chip_suggestion_01` |
+| List / menu item | `row_list_item_01`, `menu_item_01` |
+| Selection marker | `selected_indicator` |
+
+### Containers And Overlays
+
+| UI role | Recommended names |
+|---|---|
+| Card | `card_content`, `card_plan_option_01` |
+| Card variants | `card_elevated_content`, `card_filled_content`, `card_outlined_content` |
+| Dialog | `dialog_alert`, `dialog_delete_confirm`, `dialog_fullscreen_editor` |
+| Bottom / side sheet | `sheet_action_menu`, `sheet_side_filter` |
+| Modal scrim | `overlay_modal_scrim` |
+| Divider | `divider_section` |
+| Carousel | `carousel_media` |
+
+Centered prompts, confirmations, and modal surfaces must use `dialog_`; bottom or side surfaces must use `sheet_`. Do not call them generic components.
+
+### Feedback, Text, And Media
+
+| UI role | Recommended names |
+|---|---|
+| Badge | `badge_unread` |
+| Progress | `progress_loading`, `progress_linear_loading`, `progress_circular_loading` |
+| Snackbar / tooltip | `snackbar_feedback`, `tooltip_help` |
+| Text | `tv_title`, `tv_body`, `tv_input_label`, `tv_supporting_text` |
+| Error / placeholder / link | `tv_error_message`, `tv_placeholder`, `tv_legal_link_primary` |
+| Icon component | `icon_toolbar_back`, `icon_leading`, `icon_trailing` |
+| Runtime image | `iv_avatar`, `iv_preview`, `iv_thumbnail` |
+
+### States
 
 ```text
-dialog_upgrade_offer
-component_account_balance
-btn_primary_cta
-icon_toolbar_back
-tab_filter_item_02
+empty_state
+loading_state
+error_state
+success_state
+disabled_state
+selected_state
+expanded_state
 ```
 
-Component variant names such as `Mode=Light`, `State=Default`, `Size=Large...`, or `hasTopImage=true...` are not good layer names. Use function instead.
+### Common Prefixes
 
-## Dialogs And Modals
+| Prefix | Meaning |
+|---|---|
+| `container_` | Layout container |
+| `toolbar_` | App bar or tool strip |
+| `tab_`, `tab_bar_` | Tab item or container |
+| `btn_`, `fab_` | Action control |
+| `tv_` | Text node |
+| `iv_` | Runtime image/media view |
+| `icon_`, `ic_` | Icon role |
+| `card_`, `row_` | Card or list item |
+| `dialog_`, `sheet_`, `overlay_` | Modal surfaces |
+| `bg_`, `divider_`, `badge_` | Supporting visual role |
+| `component_`, `widget_` | Reusable UI without a more specific role |
+| `section_` | Figma section container |
 
-If a component/frame is visually a centered prompt, confirmation, bottom sheet, dialog, or modal, name the outer layer with `dialog_` or `sheet_`, even if it is a component instance.
+## Asset Export Naming
 
-Examples:
+Use the asset marker only when implementation should download the Figma node as a file:
 
 ```text
-dialog_upgrade_offer
-dialog_delete_confirm
-sheet_action_menu
-overlay_modal_scrim
-btn_dialog_primary
-tv_dialog_title
+asset_{semantic_name}__{format}
+```
+
+Allowed formats are `svg`, `png`, and `jpg`.
+
+```text
+asset_illustration_empty_state__svg
+asset_illustration_subscription__png
+asset_badge_ai_magic__svg
+asset_decoration_home_header__png
+asset_background_onboarding__jpg
+```
+
+An image fill, vector, gradient, effect, frame, or group is construction evidence, not proof that the node should be exported.
+
+### Required Inspection
+
+Before deciding, inspect:
+
+- Node type and dimensions.
+- `exportSettings`.
+- Paint fills, including image fills and opacity.
+- Effects, masks, blend modes, and clipping.
+- Whether it is a component or instance and the source component role.
+- Child structure, editable text, controls, navigation, and list content.
+- Whether content is static product artwork or runtime/user/remote content.
+- Whether ordinary Android UI primitives can reproduce it faithfully.
+- Whether an ancestor is already a confirmed export root.
+
+### Decision Order
+
+Classify every plausible resource as `confirmed`, `candidate`, or `excluded`. Apply this precedence:
+
+1. Explicit confirmation.
+2. Hard exclusion.
+3. High-confidence inferred confirmation.
+4. Candidate.
+
+Explicit confirmation:
+
+- Non-empty Figma `exportSettings`.
+- LayerOps shared data `export=1`.
+- The user explicitly identifies the node as a file resource.
+- An already valid `asset_...__format` name.
+
+A page/frame selected for general renaming does not explicitly confirm every descendant.
+
+Hard exclusions, unless the user explicitly overrides:
+
+- Status bar, navigation bar, home indicator, device frame, keyboard mockup.
+- User avatar, uploaded media, feed/product photo, remote thumbnail, or runtime placeholder.
+- Solid fill, ordinary gradient, border, rounded rectangle, divider, scrim, or code-supported shadow.
+- Shared UI component instance or its internals.
+- Standard Material/platform icon expected to map to a code icon.
+- Button, tab, toolbar, dialog, card, list row, text, badge, or other UI control.
+- Ordinary layout `FRAME` or `GROUP`.
+- Child of a confirmed asset root, unless independently reused and explicitly exported.
+
+High-confidence inferred confirmation, only when no exclusion applies:
+
+- Standalone vector/image brand logo, symbol, or wordmark rather than editable text.
+- Fixed raster decoration or illustration with transparency, blur, masks, or effects that code cannot faithfully reproduce.
+- Illustration-only outer `FRAME` whose children form one reusable artwork and contain no controls, content text, navigation, or list structure.
+
+Candidate examples:
+
+- Image fill with unclear static versus runtime ownership.
+- Standalone vector that may be a custom asset, standard icon, divider, mask, or shape.
+- Photo-like fill with unclear ownership.
+- Decorative background or multi-layer frame mixing artwork and UI.
+- Local component that may package artwork rather than reusable code UI.
+
+Candidates keep ordinary semantic names. Report the node ID, current name, likely kind/format, evidence, and the missing fact needed for confirmation.
+
+### Export Boundary
+
+- Export the smallest complete reusable visual.
+- Keep code-renderable backgrounds separate from raster decoration.
+- Keep editable labels, prices, localized copy, badges, and controls outside artwork.
+- For composed illustrations, prefer an outer `FRAME` to a `GROUP` for stable bounds.
+- Mark only the export root. Children keep ordinary semantic names.
+
+Example:
+
+```text
+asset_illustration_empty_state__svg
+bg_circle
+character
+face
+body
+shadow
+sparkles
+decorative_line
+```
+
+### Kind And Format
+
+| Confirmed asset | Naming |
+|---|---|
+| Pure vector logo, custom icon, badge, illustration | `asset_logo_*__svg`, `asset_icon_*__svg`, `asset_badge_*__svg`, `asset_illustration_*__svg` |
+| Transparent or effect-heavy static artwork | `asset_decoration_*__png`, `asset_illustration_*__png` |
+| Opaque photo or photographic background | `asset_photo_*__jpg`, `asset_background_*__jpg` |
+| Transparent bitmap requiring exact compositing | `asset_*__png` |
+
+Ordinary gradients and shapes stay in code. Use PNG only when the user explicitly chooses to bake them into a file.
+
+Decision examples:
+
+```text
+status_bar_mockup -> excluded
+bg_upgrade_banner_gradient -> excluded
+brand_wordmark -> asset_logo_brand_wordmark__svg
+fixed_banner_artwork -> asset_decoration_upgrade_banner__png
+avatar_image -> iv_profile_avatar
 ```
 
 ## Validation
 
-After renaming, validate:
+Validate after renaming:
 
-- All names match `^[a-z][a-z0-9_]*$`.
-- Frame roots do not start with `screen_`.
-- Figma defaults are gone: `Frame`, `Rectangle 1`, `Vector 2`, `Union`, `bounding box`, `action02`.
-- Visible strings are not copied into names.
-- Project-specific page terms are gone from descendants. Build this term list dynamically from the target file's old page/frame names and obvious legacy labels; do not hard-code terms from any source project.
-- Inaccessible component internals are reported separately rather than forced.
+- Ordinary names match `^[a-z][a-z0-9_]*$`.
+- Asset roots match `^asset_[a-z0-9]+(?:_[a-z0-9]+)*__(svg|png|jpg)$`.
+- Every asset marker has a confirmed decision.
+- Candidates and exclusions never receive asset markers.
+- Asset children do not repeat the marker unless separately exported.
+- Non-assets do not contain `__svg`, `__png`, or `__jpg`.
+- Root frames do not start with `screen_`.
+- Figma defaults, visible-copy names, and variant strings are gone.
+- Descendants do not inherit project page names as filler.
+- Inaccessible component internals are reported, not forced.
+
+Build the project-context leak list dynamically from old root names, section names, obvious page labels, and legacy patterns in the current file. Never hard-code terms from another project.
 
 Report:
 
-- Target section count.
-- Target frame count.
-- Checked layer count.
-- Renamed count.
-- Preserved valid existing count.
-- New/non-compliant renamed count.
-- Failed/inaccessible count.
-- Validation counts for invalid names, default names, visible-string leaks, and project-context leaks.
+- Target section and frame counts.
+- Checked, renamed, preserved, and inaccessible node counts.
+- New/non-compliant rename count.
+- Invalid/default/copy/context-leak counts.
+- Confirmed, candidate, and excluded asset counts.
+- Export counts by format and invalid marker count.
+- Node ID and one-line reason for every candidate.
 
-## Figma Execution Notes
+## Figma Execution
 
-- Use `await figma.setCurrentPageAsync(page)` once per `use_figma` call.
-- Use `return` for all output.
-- Wrap property access with safe helpers because instance internals can throw `node_not_found`.
-- If `use_figma` errors, remember it is atomic; fix the script and rerun.
-- For text content, do not edit characters. Renaming text nodes does not require font loading, but avoid touching `characters`.
-- Use `setSharedPluginData` / `getSharedPluginData` under namespace `layerops` to support future incremental reruns.
+- Call `await figma.setCurrentPageAsync(page)` once per `use_figma` call.
+- Return all tool output explicitly.
+- Use safe property helpers because instance internals can throw `node_not_found`.
+- A failed `use_figma` script is atomic; fix it and rerun.
+- Rename text nodes without editing `characters` or loading fonts.
+- Use `setSharedPluginData` and `getSharedPluginData` with namespace `layerops`.
