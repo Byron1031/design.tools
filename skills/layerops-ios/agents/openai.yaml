@@ -1,4 +1,4 @@
 interface:
   display_name: "LayerOps iOS"
-  short_description: "Normalize Figma layers with Apple HIG-aligned iOS semantics."
-  default_prompt: "Rename the selected Figma frame or page using iOS and iPadOS business semantics, official component roles, and lowerCamelCase names."
+  short_description: "Normalize iOS layers and identify Asset Catalog export roots."
+  default_prompt: "Rename the selected Figma frame or page using iOS and iPadOS business semantics, official component roles, lowerCamelCase names, and verified Asset Catalog export markers."

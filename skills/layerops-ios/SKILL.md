@@ -1,29 +1,28 @@
 ---
 name: layerops-ios
-description: Rename Figma layers into iOS- and iPadOS-friendly lowerCamelCase business-semantic names aligned with Apple Human Interface Guidelines, SwiftUI, UIKit, accessibilityIdentifier, and XCTest. Use for iOS Figma frame, page, layer, component, or naming audits.
+description: Rename Figma layers into iOS- and iPadOS-friendly lowerCamelCase business-semantic names, identify Asset Catalog export roots, and preserve valid names on incremental reruns. Aligns with Apple HIG, SwiftUI, UIKit, accessibilityIdentifier, XCTest, and Xcode image resources. Use for iOS Figma frame, page, layer, component, asset naming, or audits.
 ---
 
 # LayerOps iOS
 
 ## Purpose
 
-Rename Figma layers so their structure maps cleanly to iOS and iPadOS implementation. Prefer stable business meaning and official UI roles over visible copy, visual descriptions, Figma defaults, framework-specific class names, or inherited page context.
+Rename Figma layers so their structure maps cleanly to iOS and iPadOS implementation, and mark only visual resources that should ship through an Xcode Asset Catalog. Prefer stable business meaning and official UI roles over visible copy, visual descriptions, Figma defaults, framework-specific class names, or inherited page context.
 
 This file is self-contained. Do not depend on optional reference files for component vocabulary or naming decisions.
 
 Always load the `figma-use` skill before any `use_figma` call.
-
-This iteration covers component and layer naming only. Do not infer file-export or asset-delivery behavior from these rules.
 
 ## Official Alignment
 
 Use these sources as the terminology baseline:
 
 - Apple Human Interface Guidelines components: https://developer.apple.com/design/human-interface-guidelines/components/
-- SwiftUI controls and indicators: https://developer.apple.com/documentation/swiftui/controls-and-indicators
-- UIKit views and controls: https://developer.apple.com/documentation/uikit/views-and-controls
+- SwiftUI and UIKit controls: https://developer.apple.com/documentation/swiftui/controls-and-indicators and https://developer.apple.com/documentation/uikit/views-and-controls
 - Swift API Design Guidelines: https://www.swift.org/documentation/api-design-guidelines/
 - UIKit accessibility identifiers: https://developer.apple.com/documentation/uikit/uiaccessibilityidentification/accessibilityidentifier
+- Xcode image assets: https://developer.apple.com/documentation/xcode/managing-assets-with-asset-catalogs/ and https://developer.apple.com/documentation/xcode/adding-images-to-your-xcode-project
+- SF Symbols: https://developer.apple.com/documentation/uikit/configuring-and-displaying-symbol-images-in-your-ui
 
 Apply Apple terminology for iOS and iPadOS. Do not introduce platform-specific component terms from other Apple operating systems into the default vocabulary.
 
@@ -39,9 +38,9 @@ Apply Apple terminology for iOS and iPadOS. Do not introduce platform-specific c
 4. Run incremental mode unless the user explicitly asks for a full rewrite.
 5. Determine each node's business meaning and actual UI role.
 6. Resolve official terminology using the precedence rules below.
-7. Rename roots before descendants.
-8. Mark successfully processed nodes with shared plugin data when supported.
-9. Validate and report the result.
+7. Inspect every plausible visual resource and classify it as confirmed, candidate, or excluded.
+8. Rename roots before descendants and mark only confirmed export roots.
+9. Save shared plugin data when supported, then validate and report.
 
 ## Scope
 
@@ -60,6 +59,9 @@ Reruns must avoid name churn after designers add or change layers.
 - Rename new, untagged, default-named, or non-compliant nodes.
 - Correct a casing-valid name when its UI role is wrong or overly generic.
 - Correct deprecated, non-iOS, visible-copy, variant-property, and page-context names.
+- Add an asset marker to a newly confirmed export root that lacks one.
+- Remove stale asset markers and export metadata from placeholders, previews, runtime content, or other hard exclusions.
+- Do not promote an ambiguous candidate without stronger evidence.
 - Preserve a manually improved valid name even when another valid synonym exists.
 - Use full rewrite mode only when explicitly requested.
 
@@ -96,6 +98,8 @@ Rules:
 - Do not encode transient style, color, size, mode, or variant properties in page-instance names.
 
 `/` may remain in a design-system component source name, but not in a page-instance layer name.
+
+Confirmed export roots use the asset protocol defined below and are the only exception to the ordinary-name regex.
 
 ## Root Frames
 
@@ -351,27 +355,98 @@ Rules:
 
 Use these only when a more specific official component role does not apply:
 
-| Suffix | Meaning |
-|---|---|
-| `Container` | Generic layout container |
-| `Stack` | Ordered content stack |
-| `Section` | Semantic content section |
-| `Header` | Section or region header |
-| `Footer` | Section or region footer |
-| `Background` | Background layer |
-| `Overlay` | Overlay or scrim |
-| `Divider` | Separator |
-| `Indicator` | Visual status or selection indicator |
-| `Placeholder` | Non-content placeholder |
-| `Component` | Reusable instance without a more specific role |
+- Layout: `Container`, `Stack`, `Section`.
+- Regions: `Header`, `Footer`, `Background`, `Overlay`.
+- Elements: `Divider`, `Indicator`, `Placeholder`.
+- Reusable fallback: `Component`.
 
 Do not use `Container`, `Component`, or `Widget` when the node is clearly a list, toolbar, alert, button, sheet, or another official role.
+
+## Asset Catalog Export
+
+Use `asset_{xcodeAssetName}__{format}` only when implementation should download the Figma node and place it in an Xcode Asset Catalog.
+
+- Asset roots must match `^asset_[a-z][A-Za-z0-9]*__(svg|pdf|png|jpg)$`.
+- The body is the final descriptive `lowerCamelCase` Asset Catalog name.
+- Strip `asset_` and the format suffix before code use.
+- Example: `asset_emptyStateIllustration__svg` becomes `ImageResource.emptyStateIllustration`.
+- Do not encode `1x`, `2x`, or `3x`; LayerOps records format, not scale delivery.
+
+### Decision Process
+
+Do not infer asset intent from a name or node type alone. Inspect node type, bounds, fills, effects, masks, export settings, component relationship, children, text, controls, surrounding UI, content ownership, and whether an ancestor is already an export root.
+
+Apply this precedence:
+1. Node-specific user override.
+2. Hard exclusion.
+3. Existing technical confirmation: export settings, valid LayerOps metadata, or a valid asset marker.
+4. Clear non-component static-resource evidence.
+5. Candidate when ownership or reuse remains uncertain.
+
+A page-level renaming request is not an override for every descendant. Hard exclusions override stale export settings, metadata, and existing asset names.
+
+Hard exclusions unless the user overrides the specific node:
+
+- System SF Symbols and shared icon or UI component instances that map to code.
+- Standard SwiftUI/UIKit controls, bars, rows, sheets, alerts, buttons, badges, and text.
+- User avatars, uploads, feed or product photos, network/CMS media, and generated runtime images.
+- Placeholders, skeletons, replaceable media slots, template or preset previews, sample thumbnails, demo content, and catalog previews.
+- Device chrome, keyboards, status bars, home indicators, and mockup frames.
+- Ordinary layout frames or groups and code-renderable fills, gradients, borders, dividers, scrims, and shadows.
+- A child of a confirmed asset root unless it is independently reused and explicitly exported.
+- An App Icon unless the user explicitly requests App Icon handling.
+
+Confirm when no exclusion applies:
+
+- A complete non-component custom icon, logo, wordmark, illustration, decoration, badge, or fixed visual background.
+- A static image that ships in the app bundle and does not change independently of an app release.
+- A non-component `FRAME` whose descendants form one complete reusable visual and contain no controls, navigation, list structure, or localized content.
+- Existing export settings or LayerOps metadata that agree with the semantic role.
+
+Repeated similarly sized images in a picker, list, grid, carousel, template catalog, or replaceable content area are preview/runtime content by default. If fixed artwork cannot be distinguished from preview or runtime content, keep an ordinary semantic name and report it as a candidate without adding `asset_`.
+
+### Symbols, Variants, And Boundaries
+
+- A system symbol keeps a UI name such as `toolbarBackSymbol` and is not exported.
+- A normal custom icon uses a marker such as `asset_toolbarMagicIcon__svg`.
+- Treat a node as a Custom Symbol asset only when the user confirms it follows the SF Symbols custom-symbol workflow; an arbitrary Figma vector is not enough.
+- Do not append `dark`, `light`, `iPhone`, language, or scale to the base Xcode asset name.
+- If appearance, device, or localization variants cannot be mapped safely to Asset Catalog slots, report the set as a candidate and do not flatten or auto-mark it.
+- Export the smallest complete reusable visual. For composed artwork, prefer a bounded outer `FRAME`, mark only that root, and keep its children as ordinary semantic layers.
+
+### Format Selection
+
+| Confirmed resource | Marker |
+|---|---|
+| Custom icon, logo, badge, or vector illustration | `asset_toolbarMagicIcon__svg`, `asset_brandLogo__svg` |
+| Explicit PDF vector delivery | `asset_brandLogo__pdf` |
+| Transparent or effect-heavy bitmap artwork | `asset_upgradeHeaderDecoration__png` |
+| Opaque photo or photographic background | `asset_onboardingBackground__jpg` |
+
+SVG is the default vector format. Use PDF only when the user or project explicitly requires it. Use PNG for transparency or exact compositing and JPG for opaque photographic content.
+
+For a confirmed asset root, save shared metadata when supported:
+
+```js
+node.setSharedPluginData('layeropsIos', 'export', '1')
+node.setSharedPluginData('layeropsIos', 'asset_kind', assetKind)
+node.setSharedPluginData('layeropsIos', 'export_format', format)
+node.setSharedPluginData('layeropsIos', 'xcode_asset_name', xcodeAssetName)
+```
+
+When removing a stale marker, set `export` to `0` and clear `asset_kind`, `export_format`, and `xcode_asset_name`.
 
 ## Validation
 
 Validate after renaming:
 
-- Every processed name matches `^[a-z][A-Za-z0-9]*$`.
+- Every ordinary processed name matches `^[a-z][A-Za-z0-9]*$`.
+- Every confirmed asset root matches `^asset_[a-z][A-Za-z0-9]*__(svg|pdf|png|jpg)$`.
+- Removing the marker yields a valid, descriptive Xcode name that can map to `ImageResource.<name>`.
+- Candidates and exclusions have no asset marker or export metadata.
+- System Symbols, placeholders, previews, and runtime images are never marked automatically.
+- Asset children do not repeat the marker unless separately reused and explicitly exported.
+- Ordinary names do not contain `__svg`, `__pdf`, `__png`, or `__jpg`.
 - Root frames do not start with `screen` or end with implementation-type suffixes.
 - Repeated peers use two-digit indices only when semantic names are unavailable.
 - Figma defaults are gone: `Frame`, `Rectangle 1`, `Vector 2`, `Ellipse 2`, `Union`, `Subtract`, `bounding box`, `action02`.
@@ -386,14 +461,7 @@ Validate after renaming:
 
 Build the project-context leak list dynamically from old root names, section names, obvious page labels, and legacy patterns in the current file. Never hard-code terms from another project.
 
-Report:
-
-- Target section and frame counts.
-- Checked, renamed, preserved, and inaccessible node counts.
-- New/non-compliant rename count.
-- Invalid/default/copy/context-leak counts.
-- Role-correction count.
-- Component instances preserved versus functionally renamed.
+Report target section/frame counts; checked, renamed, preserved, inaccessible, role-correction, invalid/default/copy/context-leak, and component-instance counts. Separately report confirmed, candidate, excluded, added, and removed asset-marker counts.
 
 ## Required Conversion Checks
 
@@ -402,12 +470,19 @@ Use these examples to verify the implementation:
 ```text
 Continue -> primaryButton
 Rectangle 1 inside a settings list -> settingsListRow
-SF Symbol used for back navigation -> toolbarBackSymbol
 Clickable wrapper around the back symbol -> toolbarBackButton
 Grid template item -> templateCollectionItem01
 iPad two-column navigation -> navigationSplitView
 Delete confirmation modal -> deleteConfirmAlert
 Action choices modal -> actionMenuActionSheet
+System back SF Symbol -> toolbarBackSymbol
+Non-component custom icon -> asset_toolbarMagicIcon__svg
+Empty-state illustration frame -> asset_emptyStateIllustration__svg
+Explicit PDF vector logo -> asset_brandLogo__pdf
+Transparent header decoration -> asset_upgradeHeaderDecoration__png
+Opaque onboarding photo -> asset_onboardingBackground__jpg
+Template preview -> templateThumbnailImageView
+Profile avatar loaded at runtime -> profileImageView
 ```
 
 ## Figma Execution
